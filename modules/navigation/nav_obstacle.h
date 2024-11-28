@@ -55,7 +55,7 @@ class NavObstacle : public NavRid {
 
 	bool obstacle_dirty = true;
 
-	uint32_t map_update_id = 0;
+	uint32_t last_map_iteration_id = 0;
 	bool paused = false;
 
 public:
@@ -92,7 +92,7 @@ public:
 	bool is_map_changed();
 
 	void set_avoidance_layers(uint32_t p_layers);
-	uint32_t get_avoidance_layers() const { return avoidance_layers; };
+	uint32_t get_avoidance_layers() const { return avoidance_layers; }
 
 	void set_paused(bool p_paused);
 	bool get_paused() const;

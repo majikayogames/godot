@@ -36,9 +36,10 @@
 #include "core/version.h"
 #include "editor/editor_file_system.h"
 #include "editor/editor_node.h"
-#include "editor/editor_scale.h"
-#include "editor/editor_settings.h"
+#include "editor/gui/editor_toaster.h"
 #include "editor/import/resource_importer_texture_settings.h"
+#include "editor/themes/editor_scale.h"
+#include "editor/themes/editor_theme_manager.h"
 #include "scene/resources/compressed_texture.h"
 
 void ResourceImporterTexture::_texture_reimport_roughness(const Ref<CompressedTexture2D> &p_tex, const String &p_normal_path, RS::TextureDetectRoughnessChannel p_channel) {
@@ -108,13 +109,21 @@ void ResourceImporterTexture::update_imports() {
 			bool changed = false;
 
 			if (E.value.flags & MAKE_NORMAL_FLAG && int(cf->get_value("params", "compress/normal_map")) == 0) {
-				print_line(vformat(TTR("%s: Texture detected as used as a normal map in 3D. Enabling red-green texture compression to reduce memory usage (blue channel is discarded)."), String(E.key)));
+				String message = vformat(TTR("%s: Texture detected as used as a normal map in 3D. Enabling red-green texture compression to reduce memory usage (blue channel is discarded)."), String(E.key));
+#ifdef TOOLS_ENABLED
+				EditorToaster::get_singleton()->popup_str(message);
+#endif
+				print_line(message);
 				cf->set_value("params", "compress/normal_map", 1);
 				changed = true;
 			}
 
 			if (E.value.flags & MAKE_ROUGHNESS_FLAG && int(cf->get_value("params", "roughness/mode")) == 0) {
-				print_line(vformat(TTR("%s: Texture detected as used as a roughness map in 3D. Enabling roughness limiter based on the detected associated normal map at %s."), String(E.key), E.value.normal_path_for_roughness));
+				String message = vformat(TTR("%s: Texture detected as used as a roughness map in 3D. Enabling roughness limiter based on the detected associated normal map at %s."), String(E.key), E.value.normal_path_for_roughness);
+#ifdef TOOLS_ENABLED
+				EditorToaster::get_singleton()->popup_str(message);
+#endif
+				print_line(message);
 				cf->set_value("params", "roughness/mode", E.value.channel_for_roughness + 2);
 				cf->set_value("params", "roughness/src_normal", E.value.normal_path_for_roughness);
 				changed = true;
@@ -131,7 +140,11 @@ void ResourceImporterTexture::update_imports() {
 					cf->set_value("params", "compress/mode", COMPRESS_BASIS_UNIVERSAL);
 					compress_string = "Basis Universal";
 				}
-				print_line(vformat(TTR("%s: Texture detected as used in 3D. Enabling mipmap generation and setting the texture compression mode to %s."), String(E.key), compress_string));
+				String message = vformat(TTR("%s: Texture detected as used in 3D. Enabling mipmap generation and setting the texture compression mode to %s."), String(E.key), compress_string);
+#ifdef TOOLS_ENABLED
+				EditorToaster::get_singleton()->popup_str(message);
+#endif
+				print_line(message);
 				cf->set_value("params", "mipmaps/generate", true);
 				changed = true;
 			}
@@ -228,7 +241,10 @@ void ResourceImporterTexture::get_import_options(const String &p_path, List<Impo
 	r_options->push_back(ImportOption(PropertyInfo(Variant::BOOL, "process/normal_map_invert_y"), false));
 	r_options->push_back(ImportOption(PropertyInfo(Variant::BOOL, "process/hdr_as_srgb"), false));
 	r_options->push_back(ImportOption(PropertyInfo(Variant::BOOL, "process/hdr_clamp_exposure"), false));
-	r_options->push_back(ImportOption(PropertyInfo(Variant::INT, "process/size_limit", PROPERTY_HINT_RANGE, "0,4096,1"), 0));
+
+	// Maximum bound is the highest allowed value for lossy compression (the lowest common denominator).
+	r_options->push_back(ImportOption(PropertyInfo(Variant::INT, "process/size_limit", PROPERTY_HINT_RANGE, "0,16383,1"), 0));
+
 	r_options->push_back(ImportOption(PropertyInfo(Variant::INT, "detect_3d/compress_to", PROPERTY_HINT_ENUM, "Disabled,VRAM Compressed,Basis Universal"), (p_preset == PRESET_DETECT) ? 1 : 0));
 
 	// Do path based customization only if a path was passed.
@@ -256,9 +272,9 @@ void ResourceImporterTexture::save_to_ctex_format(Ref<FileAccess> f, const Ref<I
 			for (int i = 0; i < p_image->get_mipmap_count() + 1; i++) {
 				Vector<uint8_t> data;
 				if (use_webp) {
-					data = Image::webp_lossless_packer(p_image->get_image_from_mipmap(i));
+					data = Image::webp_lossless_packer(i ? p_image->get_image_from_mipmap(i) : p_image);
 				} else {
-					data = Image::png_packer(p_image->get_image_from_mipmap(i));
+					data = Image::png_packer(i ? p_image->get_image_from_mipmap(i) : p_image);
 				}
 				int data_len = data.size();
 				f->store_32(data_len);
@@ -276,7 +292,7 @@ void ResourceImporterTexture::save_to_ctex_format(Ref<FileAccess> f, const Ref<I
 			f->store_32(p_image->get_format());
 
 			for (int i = 0; i < p_image->get_mipmap_count() + 1; i++) {
-				Vector<uint8_t> data = Image::webp_lossy_packer(p_image->get_image_from_mipmap(i), p_lossy_quality);
+				Vector<uint8_t> data = Image::webp_lossy_packer(i ? p_image->get_image_from_mipmap(i) : p_image, p_lossy_quality);
 				int data_len = data.size();
 				f->store_32(data_len);
 
@@ -367,7 +383,7 @@ void ResourceImporterTexture::_save_ctex(const Ref<Image> &p_image, const String
 	f->store_32(0);
 	f->store_32(0);
 
-	if ((p_compress_mode == COMPRESS_LOSSLESS || p_compress_mode == COMPRESS_LOSSY) && p_image->get_format() > Image::FORMAT_RGBA8) {
+	if ((p_compress_mode == COMPRESS_LOSSLESS || p_compress_mode == COMPRESS_LOSSY) && p_image->get_format() >= Image::FORMAT_RF) {
 		p_compress_mode = COMPRESS_VRAM_UNCOMPRESSED; //these can't go as lossy
 	}
 
@@ -415,7 +431,7 @@ Dictionary ResourceImporterTexture::_load_editor_meta(const String &p_path) cons
 	return f->get_var();
 }
 
-Error ResourceImporterTexture::import(const String &p_source_file, const String &p_save_path, const HashMap<StringName, Variant> &p_options, List<String> *r_platform_variants, List<String> *r_gen_files, Variant *r_metadata) {
+Error ResourceImporterTexture::import(ResourceUID::ID p_source_id, const String &p_source_file, const String &p_save_path, const HashMap<StringName, Variant> &p_options, List<String> *r_platform_variants, List<String> *r_gen_files, Variant *r_metadata) {
 	// Parse import options.
 	int32_t loader_flags = ImageFormatLoader::FLAG_NONE;
 
@@ -441,7 +457,28 @@ Error ResourceImporterTexture::import(const String &p_source_file, const String 
 	const bool normal_map_invert_y = p_options["process/normal_map_invert_y"];
 	// Support for texture streaming is not implemented yet.
 	const bool stream = false;
-	const int size_limit = p_options["process/size_limit"];
+
+	int size_limit = p_options["process/size_limit"];
+	bool using_fallback_size_limit = false;
+	if (size_limit == 0) {
+		using_fallback_size_limit = true;
+		// If no size limit is defined, use a fallback size limit to prevent textures from looking incorrect or failing to import.
+		switch (compress_mode) {
+			case COMPRESS_LOSSY:
+				// Maximum WebP size on either axis.
+				size_limit = 16383;
+				break;
+			case COMPRESS_BASIS_UNIVERSAL:
+				// Maximum Basis Universal size on either axis.
+				size_limit = 16384;
+				break;
+			default:
+				// As of June 2024, no GPU can correctly display a texture larger than 32768 pixels on either axis.
+				size_limit = 32768;
+				break;
+		}
+	}
+
 	const bool hdr_as_srgb = p_options["process/hdr_as_srgb"];
 	if (hdr_as_srgb) {
 		loader_flags |= ImageFormatLoader::FLAG_FORCE_LINEAR;
@@ -510,11 +547,19 @@ Error ResourceImporterTexture::import(const String &p_source_file, const String 
 				int new_width = size_limit;
 				int new_height = target_image->get_height() * new_width / target_image->get_width();
 
+				if (using_fallback_size_limit) {
+					// Only warn if downsizing occurred when the user did not explicitly request it.
+					WARN_PRINT(vformat("%s: Texture was downsized on import as its width (%d pixels) exceeded the importable size limit (%d pixels).", p_source_file, target_image->get_width(), size_limit));
+				}
 				target_image->resize(new_width, new_height, Image::INTERPOLATE_CUBIC);
 			} else {
 				int new_height = size_limit;
 				int new_width = target_image->get_width() * new_height / target_image->get_height();
 
+				if (using_fallback_size_limit) {
+					// Only warn if downsizing occurred when the user did not explicitly request it.
+					WARN_PRINT(vformat("%s: Texture was downsized on import as its height (%d pixels) exceeded the importable size limit (%d pixels).", p_source_file, target_image->get_height(), size_limit));
+				}
 				target_image->resize(new_width, new_height, Image::INTERPOLATE_CUBIC);
 			}
 
@@ -545,7 +590,7 @@ Error ResourceImporterTexture::import(const String &p_source_file, const String 
 			for (int i = 0; i < width; i++) {
 				for (int j = 0; j < height; j++) {
 					const Color color = target_image->get_pixel(i, j);
-					target_image->set_pixel(i, j, Color(color.r, 1 - color.g, color.b));
+					target_image->set_pixel(i, j, Color(color.r, 1 - color.g, color.b, color.a));
 				}
 			}
 		}
@@ -578,11 +623,6 @@ Error ResourceImporterTexture::import(const String &p_source_file, const String 
 				}
 			}
 		}
-	}
-
-	if (compress_mode == COMPRESS_BASIS_UNIVERSAL && image->get_format() >= Image::FORMAT_RF) {
-		// Basis universal does not support float formats, fallback.
-		compress_mode = COMPRESS_VRAM_COMPRESSED;
 	}
 
 	bool detect_3d = int(p_options["detect_3d/compress_to"]) > 0;
@@ -683,7 +723,7 @@ Error ResourceImporterTexture::import(const String &p_source_file, const String 
 			editor_meta["editor_scale"] = EDSCALE;
 		}
 		if (convert_editor_colors) {
-			editor_meta["editor_dark_theme"] = EditorSettings::get_singleton()->is_dark_theme();
+			editor_meta["editor_dark_theme"] = EditorThemeManager::is_dark_theme();
 		}
 
 		_save_editor_meta(editor_meta, p_save_path + ".editor.meta");
@@ -727,35 +767,37 @@ String ResourceImporterTexture::get_import_settings_string() const {
 	return s;
 }
 
-bool ResourceImporterTexture::are_import_settings_valid(const String &p_path) const {
-	Dictionary meta = ResourceFormatImporter::get_singleton()->get_resource_metadata(p_path);
-
-	if (meta.has("has_editor_variant")) {
+bool ResourceImporterTexture::are_import_settings_valid(const String &p_path, const Dictionary &p_meta) const {
+	if (p_meta.has("has_editor_variant")) {
 		String imported_path = ResourceFormatImporter::get_singleton()->get_internal_resource_path(p_path);
+		if (!FileAccess::exists(imported_path)) {
+			return false;
+		}
+
 		String editor_meta_path = imported_path.replace(".editor.ctex", ".editor.meta");
 		Dictionary editor_meta = _load_editor_meta(editor_meta_path);
 
 		if (editor_meta.has("editor_scale") && (float)editor_meta["editor_scale"] != EDSCALE) {
 			return false;
 		}
-		if (editor_meta.has("editor_dark_theme") && (bool)editor_meta["editor_dark_theme"] != EditorSettings::get_singleton()->is_dark_theme()) {
+		if (editor_meta.has("editor_dark_theme") && (bool)editor_meta["editor_dark_theme"] != EditorThemeManager::is_dark_theme()) {
 			return false;
 		}
 	}
 
-	if (!meta.has("vram_texture")) {
+	if (!p_meta.has("vram_texture")) {
 		return false;
 	}
 
-	bool vram = meta["vram_texture"];
+	bool vram = p_meta["vram_texture"];
 	if (!vram) {
 		return true; // Do not care about non-VRAM.
 	}
 
 	// Will become invalid if formats are missing to import.
 	Vector<String> formats_imported;
-	if (meta.has("imported_formats")) {
-		formats_imported = meta["imported_formats"];
+	if (p_meta.has("imported_formats")) {
+		formats_imported = p_meta["imported_formats"];
 	}
 
 	int index = 0;

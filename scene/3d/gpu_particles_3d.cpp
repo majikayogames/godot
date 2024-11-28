@@ -34,7 +34,6 @@
 #include "scene/resources/curve_texture.h"
 #include "scene/resources/gradient_texture.h"
 #include "scene/resources/particle_process_material.h"
-#include "scene/scene_string_names.h"
 
 AABB GPUParticles3D::get_aabb() const {
 	return AABB();
@@ -415,6 +414,10 @@ AABB GPUParticles3D::capture_aabb() const {
 }
 
 void GPUParticles3D::_validate_property(PropertyInfo &p_property) const {
+	if (p_property.name == "emitting") {
+		p_property.hint = one_shot ? PROPERTY_HINT_ONESHOT : PROPERTY_HINT_NONE;
+	}
+
 	if (p_property.name.begins_with("draw_pass_")) {
 		int index = p_property.name.get_slicec('_', 2).to_int() - 1;
 		if (index >= draw_passes.size()) {
@@ -460,9 +463,6 @@ void GPUParticles3D::_notification(int p_what) {
 		// Use internal process when emitting and one_shot is on so that when
 		// the shot ends the editor can properly update.
 		case NOTIFICATION_INTERNAL_PROCESS: {
-			RS::get_singleton()->particles_set_emitter_velocity(particles, (get_global_position() - previous_position) / get_process_delta_time());
-			previous_position = get_global_position();
-
 			if (one_shot) {
 				time += get_process_delta_time();
 				if (time > emission_time) {
@@ -473,7 +473,7 @@ void GPUParticles3D::_notification(int p_what) {
 				}
 				if (time > active_time) {
 					if (active && !signal_canceled) {
-						emit_signal(SceneStringNames::get_singleton()->finished);
+						emit_signal(SceneStringName(finished));
 					}
 					active = false;
 					if (!emitting) {
@@ -483,8 +483,21 @@ void GPUParticles3D::_notification(int p_what) {
 			}
 		} break;
 
+		case NOTIFICATION_INTERNAL_PHYSICS_PROCESS: {
+			// Update velocity in physics process, so that velocity calculations remain correct
+			// if the physics tick rate is lower than the rendered framerate (especially without physics interpolation).
+			const Vector3 velocity = (get_global_position() - previous_position) / get_physics_process_delta_time();
+
+			if (velocity != previous_velocity) {
+				RS::get_singleton()->particles_set_emitter_velocity(particles, velocity);
+				previous_velocity = velocity;
+			}
+			previous_position = get_global_position();
+		} break;
+
 		case NOTIFICATION_ENTER_TREE: {
 			set_process_internal(false);
+			set_physics_process_internal(false);
 			if (sub_emitter != NodePath()) {
 				_attach_sub_emitter();
 			}
@@ -495,12 +508,15 @@ void GPUParticles3D::_notification(int p_what) {
 			}
 			previous_position = get_global_transform().origin;
 			set_process_internal(true);
+			set_physics_process_internal(true);
 		} break;
 
 		case NOTIFICATION_EXIT_TREE: {
 			RS::get_singleton()->particles_set_subemitter(particles, RID());
 		} break;
 
+		case NOTIFICATION_SUSPENDED:
+		case NOTIFICATION_UNSUSPENDED:
 		case NOTIFICATION_PAUSED:
 		case NOTIFICATION_UNPAUSED: {
 			if (is_inside_tree()) {
@@ -732,7 +748,7 @@ void GPUParticles3D::_bind_methods() {
 
 	ADD_SIGNAL(MethodInfo("finished"));
 
-	ADD_PROPERTY(PropertyInfo(Variant::BOOL, "emitting"), "set_emitting", "is_emitting");
+	ADD_PROPERTY(PropertyInfo(Variant::BOOL, "emitting", PROPERTY_HINT_ONESHOT), "set_emitting", "is_emitting");
 	ADD_PROPERTY_DEFAULT("emitting", true); // Workaround for doctool in headless mode, as dummy rasterizer always returns false.
 	ADD_PROPERTY(PropertyInfo(Variant::INT, "amount", PROPERTY_HINT_RANGE, "1,1000000,1,exp"), "set_amount", "get_amount");
 	ADD_PROPERTY(PropertyInfo(Variant::FLOAT, "amount_ratio", PROPERTY_HINT_RANGE, "0,1,0.0001"), "set_amount_ratio", "get_amount_ratio");
@@ -759,7 +775,7 @@ void GPUParticles3D::_bind_methods() {
 	ADD_PROPERTY(PropertyInfo(Variant::BOOL, "trail_enabled"), "set_trail_enabled", "is_trail_enabled");
 	ADD_PROPERTY(PropertyInfo(Variant::FLOAT, "trail_lifetime", PROPERTY_HINT_RANGE, "0.01,10,0.01,or_greater,suffix:s"), "set_trail_lifetime", "get_trail_lifetime");
 	ADD_GROUP("Process Material", "");
-	ADD_PROPERTY(PropertyInfo(Variant::OBJECT, "process_material", PROPERTY_HINT_RESOURCE_TYPE, "ShaderMaterial,ParticleProcessMaterial"), "set_process_material", "get_process_material");
+	ADD_PROPERTY(PropertyInfo(Variant::OBJECT, "process_material", PROPERTY_HINT_RESOURCE_TYPE, "ParticleProcessMaterial,ShaderMaterial"), "set_process_material", "get_process_material");
 	ADD_GROUP("Draw Passes", "draw_");
 	ADD_PROPERTY(PropertyInfo(Variant::INT, "draw_passes", PROPERTY_HINT_RANGE, "0," + itos(MAX_DRAW_PASSES) + ",1"), "set_draw_passes", "get_draw_passes");
 	for (int i = 0; i < MAX_DRAW_PASSES; i++) {

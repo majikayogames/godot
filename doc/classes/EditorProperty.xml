@@ -84,7 +84,7 @@
 		<member name="label" type="String" setter="set_label" getter="get_label" default="&quot;&quot;">
 			Set this property to change the label (if you want to show one).
 		</member>
-		<member name="read_only" type="bool" setter="set_read_only" getter="is_read_only" default="false">
+		<member name="read_only" type="bool" setter="set_read_only" getter="is_read_only" default="false" keywords="enabled, disabled, editable">
 			Used by the inspector, set to [code]true[/code] when the property is read-only.
 		</member>
 	</members>
@@ -130,6 +130,13 @@
 			<param index="0" name="property" type="StringName" />
 			<description>
 				Emitted when a property was deleted. Used internally.
+			</description>
+		</signal>
+		<signal name="property_favorited">
+			<param index="0" name="property" type="StringName" />
+			<param index="1" name="favorited" type="bool" />
+			<description>
+				Emit it if you want to mark a property as favorited, making it appear at the top of the inspector.
 			</description>
 		</signal>
 		<signal name="property_keyed">

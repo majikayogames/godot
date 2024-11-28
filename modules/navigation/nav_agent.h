@@ -31,7 +31,6 @@
 #ifndef NAV_AGENT_H
 #define NAV_AGENT_H
 
-#include "nav_agent.h"
 #include "nav_rid.h"
 
 #include "core/object/class_db.h"
@@ -68,11 +67,11 @@ class NavAgent : public NavRid {
 	uint32_t avoidance_mask = 1;
 	real_t avoidance_priority = 1.0;
 
-	Callable avoidance_callback = Callable();
+	Callable avoidance_callback;
 
 	bool agent_dirty = true;
 
-	uint32_t map_update_id = 0;
+	uint32_t last_map_iteration_id = 0;
 	bool paused = false;
 
 public:
@@ -131,13 +130,13 @@ public:
 	const Vector3 &get_velocity_forced() const { return velocity_forced; }
 
 	void set_avoidance_layers(uint32_t p_layers);
-	uint32_t get_avoidance_layers() const { return avoidance_layers; };
+	uint32_t get_avoidance_layers() const { return avoidance_layers; }
 
 	void set_avoidance_mask(uint32_t p_mask);
-	uint32_t get_avoidance_mask() const { return avoidance_mask; };
+	uint32_t get_avoidance_mask() const { return avoidance_mask; }
 
 	void set_avoidance_priority(real_t p_priority);
-	real_t get_avoidance_priority() const { return avoidance_priority; };
+	real_t get_avoidance_priority() const { return avoidance_priority; }
 
 	void set_paused(bool p_paused);
 	bool get_paused() const;

@@ -29,6 +29,7 @@
 /**************************************************************************/
 
 #include "rendering_server.h"
+#include "rendering_server.compat.inc"
 
 #include "core/config/project_settings.h"
 #include "core/object/worker_thread_pool.h"
@@ -82,28 +83,19 @@ static PackedInt64Array to_int_array(const Vector<ObjectID> &ids) {
 }
 
 PackedInt64Array RenderingServer::_instances_cull_aabb_bind(const AABB &p_aabb, RID p_scenario) const {
-	if (RSG::threaded) {
-		WARN_PRINT_ONCE("Using this function with a threaded renderer hurts performance, as it causes a server stall.");
-	}
 	Vector<ObjectID> ids = instances_cull_aabb(p_aabb, p_scenario);
 	return to_int_array(ids);
 }
 
 PackedInt64Array RenderingServer::_instances_cull_ray_bind(const Vector3 &p_from, const Vector3 &p_to, RID p_scenario) const {
-	if (RSG::threaded) {
-		WARN_PRINT_ONCE("Using this function with a threaded renderer hurts performance, as it causes a server stall.");
-	}
 	Vector<ObjectID> ids = instances_cull_ray(p_from, p_to, p_scenario);
 	return to_int_array(ids);
 }
 
 PackedInt64Array RenderingServer::_instances_cull_convex_bind(const TypedArray<Plane> &p_convex, RID p_scenario) const {
-	if (RSG::threaded) {
-		WARN_PRINT_ONCE("Using this function with a threaded renderer hurts performance, as it causes a server stall.");
-	}
 	Vector<Plane> planes;
 	for (int i = 0; i < p_convex.size(); ++i) {
-		Variant v = p_convex[i];
+		const Variant &v = p_convex[i];
 		ERR_FAIL_COND_V(v.get_type() != Variant::PLANE, PackedInt64Array());
 		planes.push_back(v);
 	}
@@ -317,7 +309,7 @@ RID RenderingServer::get_white_texture() {
 			w[i] = 255;
 		}
 	}
-	Ref<Image> white = memnew(Image(4, 4, 0, Image::FORMAT_RGB8, wt));
+	Ref<Image> white = memnew(Image(4, 4, false, Image::FORMAT_RGB8, wt));
 	white_texture = texture_2d_create(white);
 	return white_texture;
 }
@@ -339,7 +331,7 @@ void _get_axis_angle(const Vector3 &p_normal, const Vector4 &p_tangent, float &r
 	if (d < 0.0) {
 		r_angle = CLAMP((1.0 - r_angle / Math_PI) * 0.5, 0.0, 0.49999);
 	} else {
-		r_angle = (r_angle / Math_PI) * 0.5 + 0.5;
+		r_angle = CLAMP((r_angle / Math_PI) * 0.5 + 0.5, 0.500008, 1.0);
 	}
 }
 
@@ -353,6 +345,22 @@ void _get_tbn_from_axis_angle(const Vector3 &p_axis, float p_angle, Vector3 &r_n
 	Vector3 tan = tbn.rows[0];
 	r_tangent = Vector4(tan.x, tan.y, tan.z, binormal_sign);
 	r_normal = tbn.rows[2];
+}
+
+AABB _compute_aabb_from_points(const Vector3 *p_data, int p_length) {
+	if (p_length == 0) {
+		return AABB();
+	}
+
+	Vector3 min = p_data[0];
+	Vector3 max = p_data[0];
+
+	for (int i = 1; i < p_length; ++i) {
+		min = min.min(p_data[i]);
+		max = max.max(p_data[i]);
+	}
+
+	return AABB(min, max - min);
 }
 
 Error RenderingServer::_surface_set_data(Array p_arrays, uint64_t p_format, uint32_t *p_offsets, uint32_t p_vertex_stride, uint32_t p_normal_stride, uint32_t p_attrib_stride, uint32_t p_skin_stride, Vector<uint8_t> &r_vertex_array, Vector<uint8_t> &r_attrib_array, Vector<uint8_t> &r_skin_array, int p_vertex_array_len, Vector<uint8_t> &r_index_array, int p_index_array_len, AABB &r_aabb, Vector<AABB> &r_bone_aabb, Vector4 &r_uv_scale) {
@@ -448,18 +456,10 @@ Error RenderingServer::_surface_set_data(Array p_arrays, uint64_t p_format, uint
 
 					const Vector3 *src = array.ptr();
 
-					r_aabb = AABB();
+					r_aabb = _compute_aabb_from_points(src, p_vertex_array_len);
+					r_aabb.size = r_aabb.size.max(SMALL_VEC3);
 
 					if (p_format & ARRAY_FLAG_COMPRESS_ATTRIBUTES) {
-						// First we need to generate the AABB for the entire surface.
-						for (int i = 0; i < p_vertex_array_len; i++) {
-							if (i == 0) {
-								r_aabb = AABB(src[i], SMALL_VEC3);
-							} else {
-								r_aabb.expand_to(src[i]);
-							}
-						}
-
 						if (!(p_format & RS::ARRAY_FORMAT_NORMAL)) {
 							// Early out if we are only setting vertex positions.
 							for (int i = 0; i < p_vertex_array_len; i++) {
@@ -565,7 +565,8 @@ Error RenderingServer::_surface_set_data(Array p_arrays, uint64_t p_format, uint
 								float angle;
 								Vector3 axis;
 								// Generate an arbitrary vector that is tangential to normal.
-								Vector3 tan = Vector3(0.0, 1.0, 0.0).cross(normal_src[i].normalized());
+								// This assumes that the normal is never (0,0,0).
+								Vector3 tan = Vector3(normal_src[i].z, -normal_src[i].x, normal_src[i].y).cross(normal_src[i].normalized()).normalized();
 								Vector4 tangent = Vector4(tan.x, tan.y, tan.z, 1.0);
 								_get_axis_angle(normal_src[i], tangent, angle, axis);
 
@@ -599,12 +600,6 @@ Error RenderingServer::_surface_set_data(Array p_arrays, uint64_t p_format, uint
 							float vector[3] = { (float)src[i].x, (float)src[i].y, (float)src[i].z };
 
 							memcpy(&vw[p_offsets[ai] + i * p_vertex_stride], vector, sizeof(float) * 3);
-
-							if (i == 0) {
-								r_aabb = AABB(src[i], SMALL_VEC3);
-							} else {
-								r_aabb.expand_to(src[i]);
-							}
 						}
 					}
 				}
@@ -688,7 +683,8 @@ Error RenderingServer::_surface_set_data(Array p_arrays, uint64_t p_format, uint
 						// Set data for tangent.
 						for (int i = 0; i < p_vertex_array_len; i++) {
 							// Generate an arbitrary vector that is tangential to normal.
-							Vector3 tan = Vector3(0.0, 1.0, 0.0).cross(normal_src[i].normalized());
+							// This assumes that the normal is never (0,0,0).
+							Vector3 tan = Vector3(normal_src[i].z, -normal_src[i].x, normal_src[i].y).cross(normal_src[i].normalized()).normalized();
 							Vector2 res = tan.octahedron_tangent_encode(1.0);
 							uint16_t vector[2] = {
 								(uint16_t)CLAMP(res.x * 65535, 0, 65535),
@@ -901,7 +897,7 @@ Error RenderingServer::_surface_set_data(Array p_arrays, uint64_t p_format, uint
 				ERR_FAIL_COND_V(p_arrays[ai].get_type() != Variant::PACKED_INT32_ARRAY, ERR_INVALID_PARAMETER);
 
 				Vector<int> indices = p_arrays[ai];
-				ERR_FAIL_COND_V(indices.size() == 0, ERR_INVALID_PARAMETER);
+				ERR_FAIL_COND_V(indices.is_empty(), ERR_INVALID_PARAMETER);
 				ERR_FAIL_COND_V(indices.size() != p_index_array_len, ERR_INVALID_PARAMETER);
 
 				/* determine whether using 16 or 32 bits indices */
@@ -1193,7 +1189,7 @@ Error RenderingServer::mesh_create_surface_data_from_arrays(SurfaceData *r_surfa
 					array_len = v3.size();
 				} break;
 				default: {
-					ERR_FAIL_V(ERR_INVALID_DATA);
+					ERR_FAIL_V_MSG(ERR_INVALID_DATA, "Vertex array must be a PackedVector2Array or PackedVector3Array.");
 				} break;
 			}
 			ERR_FAIL_COND_V(array_len == 0, ERR_INVALID_DATA);
@@ -1214,7 +1210,7 @@ Error RenderingServer::mesh_create_surface_data_from_arrays(SurfaceData *r_surfa
 					}
 				} break;
 				default: {
-					ERR_FAIL_V(ERR_INVALID_DATA);
+					ERR_FAIL_V_MSG(ERR_INVALID_DATA, "Bones array must be a PackedInt32Array.");
 				} break;
 			}
 		} else if (i == RS::ARRAY_INDEX) {
@@ -1231,6 +1227,10 @@ Error RenderingServer::mesh_create_surface_data_from_arrays(SurfaceData *r_surfa
 				if (arr[j].get_type() != Variant::NIL) {
 					bsformat |= (1 << j);
 				}
+			}
+			if (bsformat & RS::ARRAY_FORMAT_NORMAL) {
+				// We must use tangents if using normals.
+				bsformat |= RS::ARRAY_FORMAT_TANGENT;
 			}
 
 			ERR_FAIL_COND_V_MSG(bsformat != (format & RS::ARRAY_FORMAT_BLEND_SHAPE_MASK), ERR_INVALID_PARAMETER, "Blend shape format must match the main array format for Vertex, Normal and Tangent arrays.");
@@ -1326,7 +1326,7 @@ Error RenderingServer::mesh_create_surface_data_from_arrays(SurfaceData *r_surfa
 			float distance = E;
 			ERR_CONTINUE(distance <= 0.0);
 			Vector<int> indices = p_lods[E];
-			ERR_CONTINUE(indices.size() == 0);
+			ERR_CONTINUE(indices.is_empty());
 			uint32_t index_count = indices.size();
 			ERR_CONTINUE(index_count >= (uint32_t)index_array_len); // Should be smaller..
 
@@ -1781,7 +1781,7 @@ Array RenderingServer::mesh_create_arrays_from_surface_data(const SurfaceData &p
 	Vector<uint8_t> attrib_data = p_data.attribute_data;
 	Vector<uint8_t> skin_data = p_data.skin_data;
 
-	ERR_FAIL_COND_V(vertex_data.size() == 0 && (p_data.format & RS::ARRAY_FORMAT_VERTEX), Array());
+	ERR_FAIL_COND_V(vertex_data.is_empty() && (p_data.format & RS::ARRAY_FORMAT_VERTEX), Array());
 	int vertex_len = p_data.vertex_count;
 
 	Vector<uint8_t> index_data = p_data.index_data;
@@ -1801,6 +1801,14 @@ Array RenderingServer::_mesh_surface_get_skeleton_aabb_bind(RID p_mesh, int p_su
 	return arr;
 }
 #endif
+
+Rect2 RenderingServer::debug_canvas_item_get_rect(RID p_item) {
+#ifdef TOOLS_ENABLED
+	return _debug_canvas_item_get_rect(p_item);
+#else
+	return Rect2();
+#endif
+}
 
 int RenderingServer::global_shader_uniform_type_get_shader_datatype(GlobalShaderParameterType p_type) {
 	switch (p_type) {
@@ -2059,6 +2067,16 @@ void RenderingServer::_particles_set_trail_bind_poses(RID p_particles, const Typ
 	particles_set_trail_bind_poses(p_particles, tbposes);
 }
 
+String RenderingServer::get_current_rendering_driver_name() const {
+	// Needs to remain in OS, since it's actually OS that interacts with it, but it's better exposed here.
+	return ::OS::get_singleton()->get_current_rendering_driver_name();
+}
+
+String RenderingServer::get_current_rendering_method() const {
+	// Needs to remain in OS, since it's actually OS that interacts with it, but it's better exposed here.
+	return ::OS::get_singleton()->get_current_rendering_method();
+}
+
 Vector<uint8_t> _convert_surface_version_1_to_surface_version_2(uint64_t p_format, Vector<uint8_t> p_vertex_data, uint32_t p_vertex_count, uint32_t p_old_stride, uint32_t p_vertex_size, uint32_t p_normal_size, uint32_t p_position_stride, uint32_t p_normal_tangent_stride) {
 	Vector<uint8_t> new_vertex_data;
 	new_vertex_data.resize(p_vertex_data.size());
@@ -2196,6 +2214,25 @@ void RenderingServer::fix_surface_compatibility(SurfaceData &p_surface, const St
 }
 #endif
 
+#ifdef TOOLS_ENABLED
+void RenderingServer::get_argument_options(const StringName &p_function, int p_idx, List<String> *r_options) const {
+	const String pf = p_function;
+	if (p_idx == 0) {
+		if (pf == "global_shader_parameter_set" || pf == "global_shader_parameter_set_override" ||
+				pf == "global_shader_parameter_get" || pf == "global_shader_parameter_get_type" || pf == "global_shader_parameter_remove") {
+			for (const StringName &E : global_shader_parameter_get_list()) {
+				r_options->push_back(E.operator String().quote());
+			}
+		} else if (pf == "has_os_feature") {
+			for (const String E : { "\"rgtc\"", "\"s3tc\"", "\"bptc\"", "\"etc\"", "\"etc2\"", "\"astc\"" }) {
+				r_options->push_back(E);
+			}
+		}
+	}
+	Object::get_argument_options(p_function, p_idx, r_options);
+}
+#endif
+
 void RenderingServer::_bind_methods() {
 	BIND_CONSTANT(NO_INDEX_ARRAY);
 	BIND_CONSTANT(ARRAY_WEIGHTS_SIZE);
@@ -2204,6 +2241,7 @@ void RenderingServer::_bind_methods() {
 	BIND_CONSTANT(MAX_GLOW_LEVELS);
 	BIND_CONSTANT(MAX_CURSORS);
 	BIND_CONSTANT(MAX_2D_DIRECTIONAL_LIGHTS);
+	BIND_CONSTANT(MAX_MESH_SURFACES);
 
 	/* TEXTURE */
 
@@ -2211,6 +2249,7 @@ void RenderingServer::_bind_methods() {
 	ClassDB::bind_method(D_METHOD("texture_2d_layered_create", "layers", "layered_type"), &RenderingServer::_texture_2d_layered_create);
 	ClassDB::bind_method(D_METHOD("texture_3d_create", "format", "width", "height", "depth", "mipmaps", "data"), &RenderingServer::_texture_3d_create);
 	ClassDB::bind_method(D_METHOD("texture_proxy_create", "base"), &RenderingServer::texture_proxy_create);
+	ClassDB::bind_method(D_METHOD("texture_create_from_native_handle", "type", "format", "native_handle", "width", "height", "depth", "layers", "layered_type"), &RenderingServer::texture_create_from_native_handle, DEFVAL(1), DEFVAL(TEXTURE_LAYERED_2D_ARRAY));
 
 	ClassDB::bind_method(D_METHOD("texture_2d_update", "texture", "image", "layer"), &RenderingServer::texture_2d_update);
 	ClassDB::bind_method(D_METHOD("texture_3d_update", "texture", "data"), &RenderingServer::_texture_3d_update);
@@ -2236,6 +2275,10 @@ void RenderingServer::_bind_methods() {
 	ClassDB::bind_method(D_METHOD("texture_rd_create", "rd_texture", "layer_type"), &RenderingServer::texture_rd_create, DEFVAL(RenderingServer::TEXTURE_LAYERED_2D_ARRAY));
 	ClassDB::bind_method(D_METHOD("texture_get_rd_texture", "texture", "srgb"), &RenderingServer::texture_get_rd_texture, DEFVAL(false));
 	ClassDB::bind_method(D_METHOD("texture_get_native_handle", "texture", "srgb"), &RenderingServer::texture_get_native_handle, DEFVAL(false));
+
+	BIND_ENUM_CONSTANT(TEXTURE_TYPE_2D);
+	BIND_ENUM_CONSTANT(TEXTURE_TYPE_LAYERED);
+	BIND_ENUM_CONSTANT(TEXTURE_TYPE_3D);
 
 	BIND_ENUM_CONSTANT(TEXTURE_LAYERED_2D_ARRAY);
 	BIND_ENUM_CONSTANT(TEXTURE_LAYERED_CUBEMAP);
@@ -2400,6 +2443,8 @@ void RenderingServer::_bind_methods() {
 	ClassDB::bind_method(D_METHOD("multimesh_instance_set_custom_data", "multimesh", "index", "custom_data"), &RenderingServer::multimesh_instance_set_custom_data);
 	ClassDB::bind_method(D_METHOD("multimesh_get_mesh", "multimesh"), &RenderingServer::multimesh_get_mesh);
 	ClassDB::bind_method(D_METHOD("multimesh_get_aabb", "multimesh"), &RenderingServer::multimesh_get_aabb);
+	ClassDB::bind_method(D_METHOD("multimesh_set_custom_aabb", "multimesh", "aabb"), &RenderingServer::multimesh_set_custom_aabb);
+	ClassDB::bind_method(D_METHOD("multimesh_get_custom_aabb", "multimesh"), &RenderingServer::multimesh_get_custom_aabb);
 	ClassDB::bind_method(D_METHOD("multimesh_instance_get_transform", "multimesh", "index"), &RenderingServer::multimesh_instance_get_transform);
 	ClassDB::bind_method(D_METHOD("multimesh_instance_get_transform_2d", "multimesh", "index"), &RenderingServer::multimesh_instance_get_transform_2d);
 	ClassDB::bind_method(D_METHOD("multimesh_instance_get_color", "multimesh", "index"), &RenderingServer::multimesh_instance_get_color);
@@ -2407,10 +2452,18 @@ void RenderingServer::_bind_methods() {
 	ClassDB::bind_method(D_METHOD("multimesh_set_visible_instances", "multimesh", "visible"), &RenderingServer::multimesh_set_visible_instances);
 	ClassDB::bind_method(D_METHOD("multimesh_get_visible_instances", "multimesh"), &RenderingServer::multimesh_get_visible_instances);
 	ClassDB::bind_method(D_METHOD("multimesh_set_buffer", "multimesh", "buffer"), &RenderingServer::multimesh_set_buffer);
+	ClassDB::bind_method(D_METHOD("multimesh_get_buffer_rd_rid", "multimesh"), &RenderingServer::multimesh_get_buffer_rd_rid);
 	ClassDB::bind_method(D_METHOD("multimesh_get_buffer", "multimesh"), &RenderingServer::multimesh_get_buffer);
+
+	ClassDB::bind_method(D_METHOD("multimesh_set_buffer_interpolated", "multimesh", "buffer", "buffer_previous"), &RenderingServer::multimesh_set_buffer_interpolated);
+	ClassDB::bind_method(D_METHOD("multimesh_set_physics_interpolated", "multimesh", "interpolated"), &RenderingServer::multimesh_set_physics_interpolated);
+	ClassDB::bind_method(D_METHOD("multimesh_set_physics_interpolation_quality", "multimesh", "quality"), &RenderingServer::multimesh_set_physics_interpolation_quality);
+	ClassDB::bind_method(D_METHOD("multimesh_instance_reset_physics_interpolation", "multimesh", "index"), &RenderingServer::multimesh_instance_reset_physics_interpolation);
 
 	BIND_ENUM_CONSTANT(MULTIMESH_TRANSFORM_2D);
 	BIND_ENUM_CONSTANT(MULTIMESH_TRANSFORM_3D);
+	BIND_ENUM_CONSTANT(MULTIMESH_INTERP_QUALITY_FAST);
+	BIND_ENUM_CONSTANT(MULTIMESH_INTERP_QUALITY_HIGH);
 
 	/* SKELETON API */
 
@@ -2437,6 +2490,7 @@ void RenderingServer::_bind_methods() {
 	ClassDB::bind_method(D_METHOD("light_set_cull_mask", "light", "mask"), &RenderingServer::light_set_cull_mask);
 	ClassDB::bind_method(D_METHOD("light_set_distance_fade", "decal", "enabled", "begin", "shadow", "length"), &RenderingServer::light_set_distance_fade);
 	ClassDB::bind_method(D_METHOD("light_set_reverse_cull_face_mode", "light", "enabled"), &RenderingServer::light_set_reverse_cull_face_mode);
+	ClassDB::bind_method(D_METHOD("light_set_shadow_caster_mask", "light", "mask"), &RenderingServer::light_set_shadow_caster_mask);
 	ClassDB::bind_method(D_METHOD("light_set_bake_mode", "light", "bake_mode"), &RenderingServer::light_set_bake_mode);
 	ClassDB::bind_method(D_METHOD("light_set_max_sdfgi_cascade", "light", "cascade"), &RenderingServer::light_set_max_sdfgi_cascade);
 
@@ -2447,6 +2501,7 @@ void RenderingServer::_bind_methods() {
 	ClassDB::bind_method(D_METHOD("light_directional_set_sky_mode", "light", "mode"), &RenderingServer::light_directional_set_sky_mode);
 
 	ClassDB::bind_method(D_METHOD("light_projectors_set_filter", "filter"), &RenderingServer::light_projectors_set_filter);
+	ClassDB::bind_method(D_METHOD("lightmaps_set_bicubic_filter", "enable"), &RenderingServer::lightmaps_set_bicubic_filter);
 
 	BIND_ENUM_CONSTANT(LIGHT_PROJECTOR_FILTER_NEAREST);
 	BIND_ENUM_CONSTANT(LIGHT_PROJECTOR_FILTER_LINEAR);
@@ -2524,6 +2579,7 @@ void RenderingServer::_bind_methods() {
 	ClassDB::bind_method(D_METHOD("reflection_probe_set_enable_box_projection", "probe", "enable"), &RenderingServer::reflection_probe_set_enable_box_projection);
 	ClassDB::bind_method(D_METHOD("reflection_probe_set_enable_shadows", "probe", "enable"), &RenderingServer::reflection_probe_set_enable_shadows);
 	ClassDB::bind_method(D_METHOD("reflection_probe_set_cull_mask", "probe", "layers"), &RenderingServer::reflection_probe_set_cull_mask);
+	ClassDB::bind_method(D_METHOD("reflection_probe_set_reflection_mask", "probe", "layers"), &RenderingServer::reflection_probe_set_reflection_mask);
 	ClassDB::bind_method(D_METHOD("reflection_probe_set_resolution", "probe", "resolution"), &RenderingServer::reflection_probe_set_resolution);
 	ClassDB::bind_method(D_METHOD("reflection_probe_set_mesh_lod_threshold", "probe", "pixels"), &RenderingServer::reflection_probe_set_mesh_lod_threshold);
 
@@ -2732,6 +2788,7 @@ void RenderingServer::_bind_methods() {
 	ClassDB::bind_method(D_METHOD("camera_set_cull_mask", "camera", "layers"), &RenderingServer::camera_set_cull_mask);
 	ClassDB::bind_method(D_METHOD("camera_set_environment", "camera", "env"), &RenderingServer::camera_set_environment);
 	ClassDB::bind_method(D_METHOD("camera_set_camera_attributes", "camera", "effects"), &RenderingServer::camera_set_camera_attributes);
+	ClassDB::bind_method(D_METHOD("camera_set_compositor", "camera", "compositor"), &RenderingServer::camera_set_compositor);
 	ClassDB::bind_method(D_METHOD("camera_set_use_vertical_aspect", "camera", "enable"), &RenderingServer::camera_set_use_vertical_aspect);
 
 	/* VIEWPORT */
@@ -2750,6 +2807,7 @@ void RenderingServer::_bind_methods() {
 	ClassDB::bind_method(D_METHOD("viewport_set_fsr_sharpness", "viewport", "sharpness"), &RenderingServer::viewport_set_fsr_sharpness);
 	ClassDB::bind_method(D_METHOD("viewport_set_texture_mipmap_bias", "viewport", "mipmap_bias"), &RenderingServer::viewport_set_texture_mipmap_bias);
 	ClassDB::bind_method(D_METHOD("viewport_set_update_mode", "viewport", "update_mode"), &RenderingServer::viewport_set_update_mode);
+	ClassDB::bind_method(D_METHOD("viewport_get_update_mode", "viewport"), &RenderingServer::viewport_get_update_mode);
 	ClassDB::bind_method(D_METHOD("viewport_set_clear_mode", "viewport", "clear_mode"), &RenderingServer::viewport_set_clear_mode);
 	ClassDB::bind_method(D_METHOD("viewport_get_render_target", "viewport"), &RenderingServer::viewport_get_render_target);
 	ClassDB::bind_method(D_METHOD("viewport_get_texture", "viewport"), &RenderingServer::viewport_get_texture);
@@ -2795,6 +2853,7 @@ void RenderingServer::_bind_methods() {
 	ClassDB::bind_method(D_METHOD("viewport_get_measured_render_time_gpu", "viewport"), &RenderingServer::viewport_get_measured_render_time_gpu);
 
 	ClassDB::bind_method(D_METHOD("viewport_set_vrs_mode", "viewport", "mode"), &RenderingServer::viewport_set_vrs_mode);
+	ClassDB::bind_method(D_METHOD("viewport_set_vrs_update_mode", "viewport", "mode"), &RenderingServer::viewport_set_vrs_update_mode);
 	ClassDB::bind_method(D_METHOD("viewport_set_vrs_texture", "viewport", "texture"), &RenderingServer::viewport_set_vrs_texture);
 
 	BIND_ENUM_CONSTANT(VIEWPORT_SCALING_3D_MODE_BILINEAR);
@@ -2803,7 +2862,7 @@ void RenderingServer::_bind_methods() {
 	BIND_ENUM_CONSTANT(VIEWPORT_SCALING_3D_MODE_MAX);
 
 	BIND_ENUM_CONSTANT(VIEWPORT_UPDATE_DISABLED);
-	BIND_ENUM_CONSTANT(VIEWPORT_UPDATE_ONCE); // Then goes to disabled); must be manually updated.
+	BIND_ENUM_CONSTANT(VIEWPORT_UPDATE_ONCE); // Then goes to disabled, must be manually updated.
 	BIND_ENUM_CONSTANT(VIEWPORT_UPDATE_WHEN_VISIBLE); // Default
 	BIND_ENUM_CONSTANT(VIEWPORT_UPDATE_WHEN_PARENT_VISIBLE);
 	BIND_ENUM_CONSTANT(VIEWPORT_UPDATE_ALWAYS);
@@ -2849,6 +2908,7 @@ void RenderingServer::_bind_methods() {
 
 	BIND_ENUM_CONSTANT(VIEWPORT_RENDER_INFO_TYPE_VISIBLE);
 	BIND_ENUM_CONSTANT(VIEWPORT_RENDER_INFO_TYPE_SHADOW);
+	BIND_ENUM_CONSTANT(VIEWPORT_RENDER_INFO_TYPE_CANVAS);
 	BIND_ENUM_CONSTANT(VIEWPORT_RENDER_INFO_TYPE_MAX);
 
 	BIND_ENUM_CONSTANT(VIEWPORT_DEBUG_DRAW_DISABLED);
@@ -2884,6 +2944,11 @@ void RenderingServer::_bind_methods() {
 	BIND_ENUM_CONSTANT(VIEWPORT_VRS_XR);
 	BIND_ENUM_CONSTANT(VIEWPORT_VRS_MAX);
 
+	BIND_ENUM_CONSTANT(VIEWPORT_VRS_UPDATE_DISABLED);
+	BIND_ENUM_CONSTANT(VIEWPORT_VRS_UPDATE_ONCE); // Then goes to disabled, must be manually updated.
+	BIND_ENUM_CONSTANT(VIEWPORT_VRS_UPDATE_ALWAYS);
+	BIND_ENUM_CONSTANT(VIEWPORT_VRS_UPDATE_MAX);
+
 	/* SKY API */
 
 	ClassDB::bind_method(D_METHOD("sky_create"), &RenderingServer::sky_create);
@@ -2897,10 +2962,37 @@ void RenderingServer::_bind_methods() {
 	BIND_ENUM_CONSTANT(SKY_MODE_INCREMENTAL);
 	BIND_ENUM_CONSTANT(SKY_MODE_REALTIME);
 
+	/* COMPOSITOR EFFECT API */
+
+	ClassDB::bind_method(D_METHOD("compositor_effect_create"), &RenderingServer::compositor_effect_create);
+	ClassDB::bind_method(D_METHOD("compositor_effect_set_enabled", "effect", "enabled"), &RenderingServer::compositor_effect_set_enabled);
+	ClassDB::bind_method(D_METHOD("compositor_effect_set_callback", "effect", "callback_type", "callback"), &RenderingServer::compositor_effect_set_callback);
+	ClassDB::bind_method(D_METHOD("compositor_effect_set_flag", "effect", "flag", "set"), &RenderingServer::compositor_effect_set_flag);
+
+	BIND_ENUM_CONSTANT(COMPOSITOR_EFFECT_FLAG_ACCESS_RESOLVED_COLOR);
+	BIND_ENUM_CONSTANT(COMPOSITOR_EFFECT_FLAG_ACCESS_RESOLVED_DEPTH);
+	BIND_ENUM_CONSTANT(COMPOSITOR_EFFECT_FLAG_NEEDS_MOTION_VECTORS);
+	BIND_ENUM_CONSTANT(COMPOSITOR_EFFECT_FLAG_NEEDS_ROUGHNESS);
+	BIND_ENUM_CONSTANT(COMPOSITOR_EFFECT_FLAG_NEEDS_SEPARATE_SPECULAR);
+
+	BIND_ENUM_CONSTANT(COMPOSITOR_EFFECT_CALLBACK_TYPE_PRE_OPAQUE);
+	BIND_ENUM_CONSTANT(COMPOSITOR_EFFECT_CALLBACK_TYPE_POST_OPAQUE);
+	BIND_ENUM_CONSTANT(COMPOSITOR_EFFECT_CALLBACK_TYPE_POST_SKY);
+	BIND_ENUM_CONSTANT(COMPOSITOR_EFFECT_CALLBACK_TYPE_PRE_TRANSPARENT);
+	BIND_ENUM_CONSTANT(COMPOSITOR_EFFECT_CALLBACK_TYPE_POST_TRANSPARENT);
+	BIND_ENUM_CONSTANT(COMPOSITOR_EFFECT_CALLBACK_TYPE_ANY);
+
+	/* COMPOSITOR */
+
+	ClassDB::bind_method(D_METHOD("compositor_create"), &RenderingServer::compositor_create);
+
+	ClassDB::bind_method(D_METHOD("compositor_set_compositor_effects", "compositor", "effects"), &RenderingServer::compositor_set_compositor_effects);
+
 	/* ENVIRONMENT */
 
 	ClassDB::bind_method(D_METHOD("environment_create"), &RenderingServer::environment_create);
 	ClassDB::bind_method(D_METHOD("environment_set_background", "env", "bg"), &RenderingServer::environment_set_background);
+	ClassDB::bind_method(D_METHOD("environment_set_camera_id", "env", "id"), &RenderingServer::environment_set_camera_feed_id);
 	ClassDB::bind_method(D_METHOD("environment_set_sky", "env", "sky"), &RenderingServer::environment_set_sky);
 	ClassDB::bind_method(D_METHOD("environment_set_sky_custom_fov", "env", "scale"), &RenderingServer::environment_set_sky_custom_fov);
 	ClassDB::bind_method(D_METHOD("environment_set_sky_orientation", "env", "orientation"), &RenderingServer::environment_set_sky_orientation);
@@ -2913,7 +3005,7 @@ void RenderingServer::_bind_methods() {
 	ClassDB::bind_method(D_METHOD("environment_set_adjustment", "env", "enable", "brightness", "contrast", "saturation", "use_1d_color_correction", "color_correction"), &RenderingServer::environment_set_adjustment);
 	ClassDB::bind_method(D_METHOD("environment_set_ssr", "env", "enable", "max_steps", "fade_in", "fade_out", "depth_tolerance"), &RenderingServer::environment_set_ssr);
 	ClassDB::bind_method(D_METHOD("environment_set_ssao", "env", "enable", "radius", "intensity", "power", "detail", "horizon", "sharpness", "light_affect", "ao_channel_affect"), &RenderingServer::environment_set_ssao);
-	ClassDB::bind_method(D_METHOD("environment_set_fog", "env", "enable", "light_color", "light_energy", "sun_scatter", "density", "height", "height_density", "aerial_perspective", "sky_affect"), &RenderingServer::environment_set_fog);
+	ClassDB::bind_method(D_METHOD("environment_set_fog", "env", "enable", "light_color", "light_energy", "sun_scatter", "density", "height", "height_density", "aerial_perspective", "sky_affect", "fog_mode"), &RenderingServer::environment_set_fog, DEFVAL(RS::ENV_FOG_MODE_EXPONENTIAL));
 	ClassDB::bind_method(D_METHOD("environment_set_sdfgi", "env", "enable", "cascades", "min_cell_size", "y_scale", "use_occlusion", "bounce_feedback", "read_sky", "energy", "normal_bias", "probe_bias"), &RenderingServer::environment_set_sdfgi);
 	ClassDB::bind_method(D_METHOD("environment_set_volumetric_fog", "env", "enable", "density", "albedo", "emission", "emission_energy", "anisotropy", "length", "p_detail_spread", "gi_inject", "temporal_reprojection", "temporal_reprojection_amount", "ambient_inject", "sky_affect"), &RenderingServer::environment_set_volumetric_fog);
 
@@ -2955,6 +3047,9 @@ void RenderingServer::_bind_methods() {
 	BIND_ENUM_CONSTANT(ENV_GLOW_BLEND_MODE_SOFTLIGHT);
 	BIND_ENUM_CONSTANT(ENV_GLOW_BLEND_MODE_REPLACE);
 	BIND_ENUM_CONSTANT(ENV_GLOW_BLEND_MODE_MIX);
+
+	BIND_ENUM_CONSTANT(ENV_FOG_MODE_EXPONENTIAL);
+	BIND_ENUM_CONSTANT(ENV_FOG_MODE_DEPTH);
 
 	BIND_ENUM_CONSTANT(ENV_TONE_MAPPER_LINEAR);
 	BIND_ENUM_CONSTANT(ENV_TONE_MAPPER_REINHARD);
@@ -3037,6 +3132,7 @@ void RenderingServer::_bind_methods() {
 	ClassDB::bind_method(D_METHOD("scenario_set_environment", "scenario", "environment"), &RenderingServer::scenario_set_environment);
 	ClassDB::bind_method(D_METHOD("scenario_set_fallback_environment", "scenario", "environment"), &RenderingServer::scenario_set_fallback_environment);
 	ClassDB::bind_method(D_METHOD("scenario_set_camera_attributes", "scenario", "effects"), &RenderingServer::scenario_set_camera_attributes);
+	ClassDB::bind_method(D_METHOD("scenario_set_compositor", "scenario", "compositor"), &RenderingServer::scenario_set_compositor);
 
 	/* INSTANCE */
 
@@ -3047,6 +3143,8 @@ void RenderingServer::_bind_methods() {
 	ClassDB::bind_method(D_METHOD("instance_set_layer_mask", "instance", "mask"), &RenderingServer::instance_set_layer_mask);
 	ClassDB::bind_method(D_METHOD("instance_set_pivot_data", "instance", "sorting_offset", "use_aabb_center"), &RenderingServer::instance_set_pivot_data);
 	ClassDB::bind_method(D_METHOD("instance_set_transform", "instance", "transform"), &RenderingServer::instance_set_transform);
+	ClassDB::bind_method(D_METHOD("instance_set_interpolated", "instance", "interpolated"), &RenderingServer::instance_set_interpolated);
+	ClassDB::bind_method(D_METHOD("instance_reset_physics_interpolation", "instance"), &RenderingServer::instance_reset_physics_interpolation);
 	ClassDB::bind_method(D_METHOD("instance_attach_object_instance_id", "instance", "id"), &RenderingServer::instance_attach_object_instance_id);
 	ClassDB::bind_method(D_METHOD("instance_set_blend_shape_weight", "instance", "shape", "weight"), &RenderingServer::instance_set_blend_shape_weight);
 	ClassDB::bind_method(D_METHOD("instance_set_surface_override_material", "instance", "surface", "material"), &RenderingServer::instance_set_surface_override_material);
@@ -3122,6 +3220,7 @@ void RenderingServer::_bind_methods() {
 
 	ClassDB::bind_method(D_METHOD("canvas_create"), &RenderingServer::canvas_create);
 	ClassDB::bind_method(D_METHOD("canvas_set_item_mirroring", "canvas", "item", "mirroring"), &RenderingServer::canvas_set_item_mirroring);
+	ClassDB::bind_method(D_METHOD("canvas_set_item_repeat", "item", "repeat_size", "repeat_times"), &RenderingServer::canvas_set_item_repeat);
 	ClassDB::bind_method(D_METHOD("canvas_set_modulate", "canvas", "color"), &RenderingServer::canvas_set_modulate);
 	ClassDB::bind_method(D_METHOD("canvas_set_disable_scale", "disable"), &RenderingServer::canvas_set_disable_scale);
 
@@ -3154,14 +3253,17 @@ void RenderingServer::_bind_methods() {
 	ClassDB::bind_method(D_METHOD("canvas_item_set_modulate", "item", "color"), &RenderingServer::canvas_item_set_modulate);
 	ClassDB::bind_method(D_METHOD("canvas_item_set_self_modulate", "item", "color"), &RenderingServer::canvas_item_set_self_modulate);
 	ClassDB::bind_method(D_METHOD("canvas_item_set_draw_behind_parent", "item", "enabled"), &RenderingServer::canvas_item_set_draw_behind_parent);
+	ClassDB::bind_method(D_METHOD("canvas_item_set_interpolated", "item", "interpolated"), &RenderingServer::canvas_item_set_interpolated);
+	ClassDB::bind_method(D_METHOD("canvas_item_reset_physics_interpolation", "item"), &RenderingServer::canvas_item_reset_physics_interpolation);
+	ClassDB::bind_method(D_METHOD("canvas_item_transform_physics_interpolation", "item", "transform"), &RenderingServer::canvas_item_transform_physics_interpolation);
 
 	/* Primitives */
 
 	ClassDB::bind_method(D_METHOD("canvas_item_add_line", "item", "from", "to", "color", "width", "antialiased"), &RenderingServer::canvas_item_add_line, DEFVAL(-1.0), DEFVAL(false));
 	ClassDB::bind_method(D_METHOD("canvas_item_add_polyline", "item", "points", "colors", "width", "antialiased"), &RenderingServer::canvas_item_add_polyline, DEFVAL(-1.0), DEFVAL(false));
-	ClassDB::bind_method(D_METHOD("canvas_item_add_multiline", "item", "points", "colors", "width"), &RenderingServer::canvas_item_add_multiline, DEFVAL(-1.0));
-	ClassDB::bind_method(D_METHOD("canvas_item_add_rect", "item", "rect", "color"), &RenderingServer::canvas_item_add_rect);
-	ClassDB::bind_method(D_METHOD("canvas_item_add_circle", "item", "pos", "radius", "color"), &RenderingServer::canvas_item_add_circle);
+	ClassDB::bind_method(D_METHOD("canvas_item_add_multiline", "item", "points", "colors", "width", "antialiased"), &RenderingServer::canvas_item_add_multiline, DEFVAL(-1.0), DEFVAL(false));
+	ClassDB::bind_method(D_METHOD("canvas_item_add_rect", "item", "rect", "color", "antialiased"), &RenderingServer::canvas_item_add_rect, DEFVAL(false));
+	ClassDB::bind_method(D_METHOD("canvas_item_add_circle", "item", "pos", "radius", "color", "antialiased"), &RenderingServer::canvas_item_add_circle, DEFVAL(false));
 	ClassDB::bind_method(D_METHOD("canvas_item_add_texture_rect", "item", "rect", "texture", "tile", "modulate", "transpose"), &RenderingServer::canvas_item_add_texture_rect, DEFVAL(false), DEFVAL(Color(1, 1, 1)), DEFVAL(false));
 	ClassDB::bind_method(D_METHOD("canvas_item_add_msdf_texture_rect_region", "item", "rect", "texture", "src_rect", "modulate", "outline_size", "px_range", "scale"), &RenderingServer::canvas_item_add_msdf_texture_rect_region, DEFVAL(Color(1, 1, 1)), DEFVAL(0), DEFVAL(1.0), DEFVAL(1.0));
 	ClassDB::bind_method(D_METHOD("canvas_item_add_lcd_texture_rect_region", "item", "rect", "texture", "src_rect", "modulate"), &RenderingServer::canvas_item_add_lcd_texture_rect_region);
@@ -3180,6 +3282,7 @@ void RenderingServer::_bind_methods() {
 	ClassDB::bind_method(D_METHOD("canvas_item_set_z_index", "item", "z_index"), &RenderingServer::canvas_item_set_z_index);
 	ClassDB::bind_method(D_METHOD("canvas_item_set_z_as_relative_to_parent", "item", "enabled"), &RenderingServer::canvas_item_set_z_as_relative_to_parent);
 	ClassDB::bind_method(D_METHOD("canvas_item_set_copy_to_backbuffer", "item", "enabled", "rect"), &RenderingServer::canvas_item_set_copy_to_backbuffer);
+	ClassDB::bind_method(D_METHOD("canvas_item_attach_skeleton", "item", "skeleton"), &RenderingServer::canvas_item_attach_skeleton);
 
 	ClassDB::bind_method(D_METHOD("canvas_item_clear", "item"), &RenderingServer::canvas_item_clear);
 	ClassDB::bind_method(D_METHOD("canvas_item_set_draw_index", "item", "index"), &RenderingServer::canvas_item_set_draw_index);
@@ -3188,6 +3291,8 @@ void RenderingServer::_bind_methods() {
 
 	ClassDB::bind_method(D_METHOD("canvas_item_set_visibility_notifier", "item", "enable", "area", "enter_callable", "exit_callable"), &RenderingServer::canvas_item_set_visibility_notifier);
 	ClassDB::bind_method(D_METHOD("canvas_item_set_canvas_group_mode", "item", "mode", "clear_margin", "fit_empty", "fit_margin", "blur_mipmaps"), &RenderingServer::canvas_item_set_canvas_group_mode, DEFVAL(5.0), DEFVAL(false), DEFVAL(0.0), DEFVAL(false));
+
+	ClassDB::bind_method(D_METHOD("debug_canvas_item_get_rect", "item"), &RenderingServer::debug_canvas_item_get_rect);
 
 	BIND_ENUM_CONSTANT(NINE_PATCH_STRETCH);
 	BIND_ENUM_CONSTANT(NINE_PATCH_TILE);
@@ -3235,6 +3340,9 @@ void RenderingServer::_bind_methods() {
 	ClassDB::bind_method(D_METHOD("canvas_light_set_shadow_color", "light", "color"), &RenderingServer::canvas_light_set_shadow_color);
 	ClassDB::bind_method(D_METHOD("canvas_light_set_shadow_smooth", "light", "smooth"), &RenderingServer::canvas_light_set_shadow_smooth);
 	ClassDB::bind_method(D_METHOD("canvas_light_set_blend_mode", "light", "mode"), &RenderingServer::canvas_light_set_blend_mode);
+	ClassDB::bind_method(D_METHOD("canvas_light_set_interpolated", "light", "interpolated"), &RenderingServer::canvas_light_set_interpolated);
+	ClassDB::bind_method(D_METHOD("canvas_light_reset_physics_interpolation", "light"), &RenderingServer::canvas_light_reset_physics_interpolation);
+	ClassDB::bind_method(D_METHOD("canvas_light_transform_physics_interpolation", "light", "transform"), &RenderingServer::canvas_light_transform_physics_interpolation);
 
 	BIND_ENUM_CONSTANT(CANVAS_LIGHT_MODE_POINT);
 	BIND_ENUM_CONSTANT(CANVAS_LIGHT_MODE_DIRECTIONAL);
@@ -3257,6 +3365,9 @@ void RenderingServer::_bind_methods() {
 	ClassDB::bind_method(D_METHOD("canvas_light_occluder_set_as_sdf_collision", "occluder", "enable"), &RenderingServer::canvas_light_occluder_set_as_sdf_collision);
 	ClassDB::bind_method(D_METHOD("canvas_light_occluder_set_transform", "occluder", "transform"), &RenderingServer::canvas_light_occluder_set_transform);
 	ClassDB::bind_method(D_METHOD("canvas_light_occluder_set_light_mask", "occluder", "mask"), &RenderingServer::canvas_light_occluder_set_light_mask);
+	ClassDB::bind_method(D_METHOD("canvas_light_occluder_set_interpolated", "occluder", "interpolated"), &RenderingServer::canvas_light_occluder_set_interpolated);
+	ClassDB::bind_method(D_METHOD("canvas_light_occluder_reset_physics_interpolation", "occluder"), &RenderingServer::canvas_light_occluder_reset_physics_interpolation);
+	ClassDB::bind_method(D_METHOD("canvas_light_occluder_transform_physics_interpolation", "occluder", "transform"), &RenderingServer::canvas_light_occluder_transform_physics_interpolation);
 
 	/* CANVAS LIGHT OCCLUDER POLYGON */
 
@@ -3308,6 +3419,7 @@ void RenderingServer::_bind_methods() {
 	BIND_ENUM_CONSTANT(GLOBAL_VAR_TYPE_SAMPLER2DARRAY);
 	BIND_ENUM_CONSTANT(GLOBAL_VAR_TYPE_SAMPLER3D);
 	BIND_ENUM_CONSTANT(GLOBAL_VAR_TYPE_SAMPLERCUBE);
+	BIND_ENUM_CONSTANT(GLOBAL_VAR_TYPE_SAMPLEREXT);
 	BIND_ENUM_CONSTANT(GLOBAL_VAR_TYPE_MAX);
 
 	/* Free */
@@ -3323,6 +3435,9 @@ void RenderingServer::_bind_methods() {
 	ClassDB::bind_method(D_METHOD("get_video_adapter_type"), &RenderingServer::get_video_adapter_type);
 	ClassDB::bind_method(D_METHOD("get_video_adapter_api_version"), &RenderingServer::get_video_adapter_api_version);
 
+	ClassDB::bind_method(D_METHOD("get_current_rendering_driver_name"), &RenderingServer::get_current_rendering_driver_name);
+	ClassDB::bind_method(D_METHOD("get_current_rendering_method"), &RenderingServer::get_current_rendering_method);
+
 	ClassDB::bind_method(D_METHOD("make_sphere_mesh", "latitudes", "longitudes", "radius"), &RenderingServer::make_sphere_mesh);
 	ClassDB::bind_method(D_METHOD("get_test_cube"), &RenderingServer::get_test_cube);
 
@@ -3333,7 +3448,6 @@ void RenderingServer::_bind_methods() {
 	ClassDB::bind_method(D_METHOD("get_default_clear_color"), &RenderingServer::get_default_clear_color);
 	ClassDB::bind_method(D_METHOD("set_default_clear_color", "color"), &RenderingServer::set_default_clear_color);
 
-	ClassDB::bind_method(D_METHOD("has_feature", "feature"), &RenderingServer::has_feature);
 	ClassDB::bind_method(D_METHOD("has_os_feature", "feature"), &RenderingServer::has_os_feature);
 	ClassDB::bind_method(D_METHOD("set_debug_generate_wireframes", "generate"), &RenderingServer::set_debug_generate_wireframes);
 
@@ -3350,9 +3464,18 @@ void RenderingServer::_bind_methods() {
 	BIND_ENUM_CONSTANT(RENDERING_INFO_TEXTURE_MEM_USED);
 	BIND_ENUM_CONSTANT(RENDERING_INFO_BUFFER_MEM_USED);
 	BIND_ENUM_CONSTANT(RENDERING_INFO_VIDEO_MEM_USED);
+	BIND_ENUM_CONSTANT(RENDERING_INFO_PIPELINE_COMPILATIONS_CANVAS);
+	BIND_ENUM_CONSTANT(RENDERING_INFO_PIPELINE_COMPILATIONS_MESH);
+	BIND_ENUM_CONSTANT(RENDERING_INFO_PIPELINE_COMPILATIONS_SURFACE);
+	BIND_ENUM_CONSTANT(RENDERING_INFO_PIPELINE_COMPILATIONS_DRAW);
+	BIND_ENUM_CONSTANT(RENDERING_INFO_PIPELINE_COMPILATIONS_SPECIALIZATION);
 
-	BIND_ENUM_CONSTANT(FEATURE_SHADERS);
-	BIND_ENUM_CONSTANT(FEATURE_MULTITHREADED);
+	BIND_ENUM_CONSTANT(PIPELINE_SOURCE_CANVAS);
+	BIND_ENUM_CONSTANT(PIPELINE_SOURCE_MESH);
+	BIND_ENUM_CONSTANT(PIPELINE_SOURCE_SURFACE);
+	BIND_ENUM_CONSTANT(PIPELINE_SOURCE_DRAW);
+	BIND_ENUM_CONSTANT(PIPELINE_SOURCE_SPECIALIZATION);
+	BIND_ENUM_CONSTANT(PIPELINE_SOURCE_MAX);
 
 	ADD_SIGNAL(MethodInfo("frame_pre_draw"));
 	ADD_SIGNAL(MethodInfo("frame_post_draw"));
@@ -3362,7 +3485,15 @@ void RenderingServer::_bind_methods() {
 	ClassDB::bind_method(D_METHOD("get_rendering_device"), &RenderingServer::get_rendering_device);
 	ClassDB::bind_method(D_METHOD("create_local_rendering_device"), &RenderingServer::create_local_rendering_device);
 
+	ClassDB::bind_method(D_METHOD("is_on_render_thread"), &RenderingServer::is_on_render_thread);
 	ClassDB::bind_method(D_METHOD("call_on_render_thread", "callable"), &RenderingServer::call_on_render_thread);
+
+#ifndef DISABLE_DEPRECATED
+	ClassDB::bind_method(D_METHOD("has_feature", "feature"), &RenderingServer::has_feature);
+
+	BIND_ENUM_CONSTANT(FEATURE_SHADERS);
+	BIND_ENUM_CONSTANT(FEATURE_MULTITHREADED);
+#endif
 }
 
 void RenderingServer::mesh_add_surface_from_mesh_data(RID p_mesh, const Geometry3D::MeshData &p_mesh_data) {
@@ -3431,6 +3562,8 @@ void RenderingServer::init() {
 	// See `const bool can_s3tc_bptc` in the resource importer.
 	GLOBAL_DEF_RST("rendering/textures/vram_compression/import_s3tc_bptc", false);
 	GLOBAL_DEF_RST("rendering/textures/vram_compression/import_etc2_astc", false);
+	GLOBAL_DEF("rendering/textures/vram_compression/compress_with_gpu", true);
+	GLOBAL_DEF("rendering/textures/vram_compression/cache_gpu_compressor", true);
 
 	GLOBAL_DEF("rendering/textures/lossless_compression/force_png", false);
 
@@ -3451,6 +3584,8 @@ void RenderingServer::init() {
 	GLOBAL_DEF("rendering/lights_and_shadows/positional_shadow/soft_shadow_filter_quality.mobile", 0);
 
 	GLOBAL_DEF(PropertyInfo(Variant::INT, "rendering/2d/shadow_atlas/size", PROPERTY_HINT_RANGE, "128,16384"), 2048);
+	GLOBAL_DEF_RST(PropertyInfo(Variant::INT, "rendering/2d/batching/item_buffer_size", PROPERTY_HINT_RANGE, "128,1048576,1"), 16384);
+	GLOBAL_DEF_RST(PropertyInfo(Variant::INT, "rendering/2d/batching/uniform_set_cache_size", PROPERTY_HINT_RANGE, "256,1048576,1"), 256);
 
 	// Number of commands that can be drawn per frame.
 	GLOBAL_DEF_RST(PropertyInfo(Variant::INT, "rendering/gl_compatibility/item_buffer_size", PROPERTY_HINT_RANGE, "128,1048576,1"), 16384);
@@ -3461,22 +3596,21 @@ void RenderingServer::init() {
 	GLOBAL_DEF("rendering/shader_compiler/shader_cache/strip_debug", false);
 	GLOBAL_DEF("rendering/shader_compiler/shader_cache/strip_debug.release", true);
 
-	GLOBAL_DEF_RST("rendering/reflections/sky_reflections/roughness_layers", 8); // Assumes a 256x256 cubemap
+	GLOBAL_DEF_RST(PropertyInfo(Variant::INT, "rendering/reflections/sky_reflections/roughness_layers", PROPERTY_HINT_RANGE, "1,32,1"), 8); // Assumes a 256x256 cubemap
 	GLOBAL_DEF_RST("rendering/reflections/sky_reflections/texture_array_reflections", true);
 	GLOBAL_DEF("rendering/reflections/sky_reflections/texture_array_reflections.mobile", false);
-	GLOBAL_DEF_RST("rendering/reflections/sky_reflections/ggx_samples", 32);
-	GLOBAL_DEF("rendering/reflections/sky_reflections/ggx_samples.mobile", 16);
+	GLOBAL_DEF_RST(PropertyInfo(Variant::INT, "rendering/reflections/sky_reflections/ggx_samples", PROPERTY_HINT_RANGE, "0,256,1"), 32);
+	GLOBAL_DEF(PropertyInfo(Variant::INT, "rendering/reflections/sky_reflections/ggx_samples.mobile", PROPERTY_HINT_RANGE, "0,128,1"), 16);
 	GLOBAL_DEF("rendering/reflections/sky_reflections/fast_filter_high_quality", false);
-	GLOBAL_DEF("rendering/reflections/reflection_atlas/reflection_size", 256);
-	GLOBAL_DEF("rendering/reflections/reflection_atlas/reflection_size.mobile", 128);
-	GLOBAL_DEF("rendering/reflections/reflection_atlas/reflection_count", 64);
+	GLOBAL_DEF(PropertyInfo(Variant::INT, "rendering/reflections/reflection_atlas/reflection_size", PROPERTY_HINT_RANGE, "0,4096,1"), 256);
+	GLOBAL_DEF(PropertyInfo(Variant::INT, "rendering/reflections/reflection_atlas/reflection_size.mobile", PROPERTY_HINT_RANGE, "0,2048,1"), 128);
+	GLOBAL_DEF(PropertyInfo(Variant::INT, "rendering/reflections/reflection_atlas/reflection_count", PROPERTY_HINT_RANGE, "0,256,1"), 64);
 
 	GLOBAL_DEF("rendering/global_illumination/gi/use_half_resolution", false);
 
 	GLOBAL_DEF(PropertyInfo(Variant::INT, "rendering/global_illumination/voxel_gi/quality", PROPERTY_HINT_ENUM, "Low (4 Cones - Fast),High (6 Cones - Slow)"), 0);
 
-	GLOBAL_DEF("rendering/shading/overrides/force_vertex_shading", false);
-	GLOBAL_DEF("rendering/shading/overrides/force_vertex_shading.mobile", true);
+	GLOBAL_DEF_RST("rendering/shading/overrides/force_vertex_shading", false);
 	GLOBAL_DEF("rendering/shading/overrides/force_lambert_over_burley", false);
 	GLOBAL_DEF("rendering/shading/overrides/force_lambert_over_burley.mobile", true);
 
@@ -3516,7 +3650,7 @@ void RenderingServer::init() {
 	GLOBAL_DEF(PropertyInfo(Variant::INT, "rendering/textures/decals/filter", PROPERTY_HINT_ENUM, "Nearest (Fast),Linear (Fast),Nearest Mipmap (Fast),Linear Mipmap (Fast),Nearest Mipmap Anisotropic (Average),Linear Mipmap Anisotropic (Average)"), DECAL_FILTER_LINEAR_MIPMAPS);
 	GLOBAL_DEF(PropertyInfo(Variant::INT, "rendering/textures/light_projectors/filter", PROPERTY_HINT_ENUM, "Nearest (Fast),Linear (Fast),Nearest Mipmap (Fast),Linear Mipmap (Fast),Nearest Mipmap Anisotropic (Average),Linear Mipmap Anisotropic (Average)"), LIGHT_PROJECTOR_FILTER_LINEAR_MIPMAPS);
 
-	GLOBAL_DEF_RST("rendering/occlusion_culling/occlusion_rays_per_thread", 512);
+	GLOBAL_DEF_RST(PropertyInfo(Variant::INT, "rendering/occlusion_culling/occlusion_rays_per_thread", PROPERTY_HINT_RANGE, "1,2048,1,or_greater"), 512);
 
 	GLOBAL_DEF(PropertyInfo(Variant::INT, "rendering/environment/glow/upscale_mode", PROPERTY_HINT_ENUM, "Linear (Fast),Bicubic (Slow)"), 1);
 	GLOBAL_DEF("rendering/environment/glow/upscale_mode.mobile", 0);
@@ -3527,10 +3661,11 @@ void RenderingServer::init() {
 	GLOBAL_DEF(PropertyInfo(Variant::FLOAT, "rendering/environment/subsurface_scattering/subsurface_scattering_scale", PROPERTY_HINT_RANGE, "0.001,1,0.001"), 0.05);
 	GLOBAL_DEF(PropertyInfo(Variant::FLOAT, "rendering/environment/subsurface_scattering/subsurface_scattering_depth_scale", PROPERTY_HINT_RANGE, "0.001,1,0.001"), 0.01);
 
-	GLOBAL_DEF("rendering/limits/global_shader_variables/buffer_size", 65536);
+	GLOBAL_DEF(PropertyInfo(Variant::INT, "rendering/limits/global_shader_variables/buffer_size", PROPERTY_HINT_RANGE, "16,1048576,1"), 65536);
 
 	GLOBAL_DEF(PropertyInfo(Variant::FLOAT, "rendering/lightmapping/probe_capture/update_speed", PROPERTY_HINT_RANGE, "0.001,256,0.001"), 15);
 	GLOBAL_DEF(PropertyInfo(Variant::FLOAT, "rendering/lightmapping/primitive_meshes/texel_size", PROPERTY_HINT_RANGE, "0.001,100,0.001"), 0.2);
+	GLOBAL_DEF("rendering/lightmapping/lightmap_gi/use_bicubic_filter", true);
 
 	GLOBAL_DEF(PropertyInfo(Variant::INT, "rendering/global_illumination/sdfgi/probe_ray_count", PROPERTY_HINT_ENUM, "8 (Fastest),16,32,64,96,128 (Slowest)"), 1);
 	GLOBAL_DEF(PropertyInfo(Variant::INT, "rendering/global_illumination/sdfgi/frames_to_converge", PROPERTY_HINT_ENUM, "5 (Less Latency but Lower Quality),10,15,20,25,30 (More Latency but Higher Quality)"), 5);
@@ -3542,7 +3677,6 @@ void RenderingServer::init() {
 
 	GLOBAL_DEF_RST(PropertyInfo(Variant::INT, "rendering/limits/spatial_indexer/update_iterations_per_frame", PROPERTY_HINT_RANGE, "0,1024,1"), 10);
 	GLOBAL_DEF_RST(PropertyInfo(Variant::INT, "rendering/limits/spatial_indexer/threaded_cull_minimum_instances", PROPERTY_HINT_RANGE, "32,65536,1"), 1000);
-	GLOBAL_DEF_RST(PropertyInfo(Variant::INT, "rendering/limits/forward_renderer/threaded_render_minimum_instances", PROPERTY_HINT_RANGE, "32,65536,1"), 500);
 
 	GLOBAL_DEF(PropertyInfo(Variant::FLOAT, "rendering/limits/cluster_builder/max_clustered_elements", PROPERTY_HINT_RANGE, "32,8192,1"), 512);
 

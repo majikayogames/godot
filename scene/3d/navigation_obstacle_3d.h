@@ -51,20 +51,22 @@ class NavigationObstacle3D : public Node3D {
 
 	bool use_3d_avoidance = false;
 
-	Transform3D previous_transform;
-
 	Vector3 velocity;
 	Vector3 previous_velocity;
 	bool velocity_submitted = false;
 
-#ifdef DEBUG_ENABLED
-	RID fake_agent_radius_debug_instance;
-	Ref<ArrayMesh> fake_agent_radius_debug_mesh;
+	bool affect_navigation_mesh = false;
+	bool carve_navigation_mesh = false;
 
-	RID static_obstacle_debug_instance;
-	Ref<ArrayMesh> static_obstacle_debug_mesh;
+#ifdef DEBUG_ENABLED
+	RID fake_agent_radius_debug_instance_rid;
+	RID fake_agent_radius_debug_mesh_rid;
+
+	RID static_obstacle_debug_instance_rid;
+	RID static_obstacle_debug_mesh_rid;
 
 private:
+	void _update_debug();
 	void _update_fake_agent_radius_debug();
 	void _update_static_obstacle_debug();
 #endif // DEBUG_ENABLED
@@ -92,7 +94,7 @@ public:
 	real_t get_height() const { return height; }
 
 	void set_vertices(const Vector<Vector3> &p_vertices);
-	const Vector<Vector3> &get_vertices() const { return vertices; };
+	const Vector<Vector3> &get_vertices() const { return vertices; }
 
 	void set_avoidance_layers(uint32_t p_layers);
 	uint32_t get_avoidance_layers() const;
@@ -104,13 +106,22 @@ public:
 	bool get_use_3d_avoidance() const { return use_3d_avoidance; }
 
 	void set_velocity(const Vector3 p_velocity);
-	Vector3 get_velocity() const { return velocity; };
+	Vector3 get_velocity() const { return velocity; }
 
 	void _avoidance_done(Vector3 p_new_velocity); // Dummy
+
+	void set_affect_navigation_mesh(bool p_enabled);
+	bool get_affect_navigation_mesh() const;
+
+	void set_carve_navigation_mesh(bool p_enabled);
+	bool get_carve_navigation_mesh() const;
+
+	PackedStringArray get_configuration_warnings() const override;
 
 private:
 	void _update_map(RID p_map);
 	void _update_position(const Vector3 p_position);
+	void _update_transform();
 	void _update_use_3d_avoidance(bool p_use_3d_avoidance);
 };
 

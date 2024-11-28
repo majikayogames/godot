@@ -33,6 +33,7 @@
 
 #include "scene/gui/control.h"
 #include "scene/gui/scroll_bar.h"
+#include "scene/property_list_helper.h"
 #include "scene/resources/text_paragraph.h"
 
 class ItemList : public Control {
@@ -57,9 +58,11 @@ private:
 		Color icon_modulate = Color(1, 1, 1, 1);
 		Ref<Texture2D> tag_icon;
 		String text;
+		String xl_text;
 		Ref<TextParagraph> text_buf;
 		String language;
 		TextDirection text_direction = TEXT_DIRECTION_AUTO;
+		AutoTranslateMode auto_translate_mode = AUTO_TRANSLATE_MODE_INHERIT;
 
 		bool selectable = true;
 		bool selected = false;
@@ -81,7 +84,12 @@ private:
 		Item() {
 			text_buf.instantiate();
 		}
+
+		Item(bool p_dummy) {}
 	};
+
+	static inline PropertyListHelper base_property_helper;
+	PropertyListHelper property_helper;
 
 	int current = -1;
 	int hovered = -1;
@@ -91,6 +99,9 @@ private:
 	bool ensure_selected_visible = false;
 	bool same_column_width = false;
 	bool allow_search = true;
+
+	bool auto_width = false;
+	float auto_width_value = 0.0;
 
 	bool auto_height = false;
 	float auto_height_value = 0.0;
@@ -113,6 +124,7 @@ private:
 
 	Size2 fixed_icon_size;
 	Size2 max_item_size_cache;
+	Size2 fixed_tag_icon_size;
 
 	int defer_select_single = -1;
 	bool allow_rmb_select = false;
@@ -151,11 +163,15 @@ private:
 	void _shape_text(int p_idx);
 	void _mouse_exited();
 
+	String _atr(int p_idx, const String &p_text) const;
+
 protected:
 	void _notification(int p_what);
 	bool _set(const StringName &p_name, const Variant &p_value);
-	bool _get(const StringName &p_name, Variant &r_ret) const;
-	void _get_property_list(List<PropertyInfo> *p_list) const;
+	bool _get(const StringName &p_name, Variant &r_ret) const { return property_helper.property_get_value(p_name, r_ret); }
+	void _get_property_list(List<PropertyInfo> *p_list) const { property_helper.get_property_list(p_list); }
+	bool _property_can_revert(const StringName &p_name) const { return property_helper.property_can_revert(p_name); }
+	bool _property_get_revert(const StringName &p_name, Variant &r_property) const { return property_helper.property_get_revert(p_name, r_property); }
 	static void _bind_methods();
 
 public:
@@ -172,6 +188,9 @@ public:
 
 	void set_item_language(int p_idx, const String &p_language);
 	String get_item_language(int p_idx) const;
+
+	void set_item_auto_translate_mode(int p_idx, AutoTranslateMode p_mode);
+	AutoTranslateMode get_item_auto_translate_mode(int p_idx) const;
 
 	void set_item_icon(int p_idx, const Ref<Texture2D> &p_icon);
 	Ref<Texture2D> get_item_icon(int p_idx) const;
@@ -252,6 +271,8 @@ public:
 	void set_fixed_icon_size(const Size2i &p_size);
 	Size2i get_fixed_icon_size() const;
 
+	void set_fixed_tag_icon_size(const Size2i &p_size);
+
 	void set_allow_rmb_select(bool p_allow);
 	bool get_allow_rmb_select() const;
 
@@ -272,6 +293,9 @@ public:
 
 	void set_icon_scale(real_t p_scale);
 	real_t get_icon_scale() const;
+
+	void set_auto_width(bool p_enable);
+	bool has_auto_width() const;
 
 	void set_auto_height(bool p_enable);
 	bool has_auto_height() const;

@@ -32,7 +32,6 @@
 
 #include "core/config/project_settings.h"
 #include "core/os/os.h"
-#include "core/string/translation.h"
 #include "scene/theme/theme_db.h"
 
 void ItemList::_shape_text(int p_idx) {
@@ -44,7 +43,7 @@ void ItemList::_shape_text(int p_idx) {
 	} else {
 		item.text_buf->set_direction((TextServer::Direction)item.text_direction);
 	}
-	item.text_buf->add_string(item.text, theme_cache.font, theme_cache.font_size, item.language);
+	item.text_buf->add_string(item.xl_text, theme_cache.font, theme_cache.font_size, item.language);
 	if (icon_mode == ICON_MODE_TOP && max_text_lines > 0) {
 		item.text_buf->set_break_flags(TextServer::BREAK_MANDATORY | TextServer::BREAK_WORD_BOUND | TextServer::BREAK_GRAPHEME_BOUND | TextServer::BREAK_TRIM_EDGE_SPACES);
 	} else {
@@ -62,7 +61,8 @@ int ItemList::add_item(const String &p_item, const Ref<Texture2D> &p_texture, bo
 	items.push_back(item);
 	int item_id = items.size() - 1;
 
-	_shape_text(items.size() - 1);
+	items.write[item_id].xl_text = _atr(item_id, p_item);
+	_shape_text(item_id);
 
 	queue_redraw();
 	shape_changed = true;
@@ -94,6 +94,7 @@ void ItemList::set_item_text(int p_idx, const String &p_text) {
 	}
 
 	items.write[p_idx].text = p_text;
+	items.write[p_idx].xl_text = _atr(p_idx, p_text);
 	_shape_text(p_idx);
 	queue_redraw();
 	shape_changed = true;
@@ -137,6 +138,24 @@ void ItemList::set_item_language(int p_idx, const String &p_language) {
 String ItemList::get_item_language(int p_idx) const {
 	ERR_FAIL_INDEX_V(p_idx, items.size(), "");
 	return items[p_idx].language;
+}
+
+void ItemList::set_item_auto_translate_mode(int p_idx, AutoTranslateMode p_mode) {
+	if (p_idx < 0) {
+		p_idx += get_item_count();
+	}
+	ERR_FAIL_INDEX(p_idx, items.size());
+	if (items[p_idx].auto_translate_mode != p_mode) {
+		items.write[p_idx].auto_translate_mode = p_mode;
+		items.write[p_idx].xl_text = _atr(p_idx, items[p_idx].text);
+		_shape_text(p_idx);
+		queue_redraw();
+	}
+}
+
+Node::AutoTranslateMode ItemList::get_item_auto_translate_mode(int p_idx) const {
+	ERR_FAIL_INDEX_V(p_idx, items.size(), AUTO_TRANSLATE_MODE_INHERIT);
+	return items[p_idx].auto_translate_mode;
 }
 
 void ItemList::set_item_tooltip_enabled(int p_idx, const bool p_enabled) {
@@ -636,6 +655,16 @@ Size2 ItemList::Item::get_icon_size() const {
 	return size_result;
 }
 
+void ItemList::set_fixed_tag_icon_size(const Size2i &p_size) {
+	if (fixed_tag_icon_size == p_size) {
+		return;
+	}
+
+	fixed_tag_icon_size = p_size;
+	queue_redraw();
+	shape_changed = true;
+}
+
 void ItemList::gui_input(const Ref<InputEvent> &p_event) {
 	ERR_FAIL_COND(p_event.is_null());
 
@@ -721,7 +750,7 @@ void ItemList::gui_input(const Ref<InputEvent> &p_event) {
 					select(i, select_mode == SELECT_SINGLE || !mb->is_command_or_control_pressed());
 
 					if (select_mode == SELECT_SINGLE) {
-						emit_signal(SNAME("item_selected"), i);
+						emit_signal(SceneStringName(item_selected), i);
 					} else {
 						emit_signal(SNAME("multi_selected"), i, true);
 					}
@@ -763,7 +792,7 @@ void ItemList::gui_input(const Ref<InputEvent> &p_event) {
 							set_current(i);
 							ensure_current_is_visible();
 							if (select_mode == SELECT_SINGLE) {
-								emit_signal(SNAME("item_selected"), current);
+								emit_signal(SceneStringName(item_selected), current);
 							}
 
 							break;
@@ -786,7 +815,7 @@ void ItemList::gui_input(const Ref<InputEvent> &p_event) {
 				set_current(next);
 				ensure_current_is_visible();
 				if (select_mode == SELECT_SINGLE) {
-					emit_signal(SNAME("item_selected"), current);
+					emit_signal(SceneStringName(item_selected), current);
 				}
 				accept_event();
 			}
@@ -801,7 +830,7 @@ void ItemList::gui_input(const Ref<InputEvent> &p_event) {
 							set_current(i);
 							ensure_current_is_visible();
 							if (select_mode == SELECT_SINGLE) {
-								emit_signal(SNAME("item_selected"), current);
+								emit_signal(SceneStringName(item_selected), current);
 							}
 							break;
 						}
@@ -823,7 +852,7 @@ void ItemList::gui_input(const Ref<InputEvent> &p_event) {
 				set_current(next);
 				ensure_current_is_visible();
 				if (select_mode == SELECT_SINGLE) {
-					emit_signal(SNAME("item_selected"), current);
+					emit_signal(SceneStringName(item_selected), current);
 				}
 				accept_event();
 			}
@@ -836,7 +865,7 @@ void ItemList::gui_input(const Ref<InputEvent> &p_event) {
 					set_current(index);
 					ensure_current_is_visible();
 					if (select_mode == SELECT_SINGLE) {
-						emit_signal(SNAME("item_selected"), current);
+						emit_signal(SceneStringName(item_selected), current);
 					}
 					accept_event();
 					break;
@@ -851,7 +880,7 @@ void ItemList::gui_input(const Ref<InputEvent> &p_event) {
 					set_current(index);
 					ensure_current_is_visible();
 					if (select_mode == SELECT_SINGLE) {
-						emit_signal(SNAME("item_selected"), current);
+						emit_signal(SceneStringName(item_selected), current);
 					}
 					accept_event();
 
@@ -874,7 +903,7 @@ void ItemList::gui_input(const Ref<InputEvent> &p_event) {
 				set_current(next);
 				ensure_current_is_visible();
 				if (select_mode == SELECT_SINGLE) {
-					emit_signal(SNAME("item_selected"), current);
+					emit_signal(SceneStringName(item_selected), current);
 				}
 				accept_event();
 			}
@@ -894,7 +923,7 @@ void ItemList::gui_input(const Ref<InputEvent> &p_event) {
 				set_current(next);
 				ensure_current_is_visible();
 				if (select_mode == SELECT_SINGLE) {
-					emit_signal(SNAME("item_selected"), current);
+					emit_signal(SceneStringName(item_selected), current);
 				}
 				accept_event();
 			}
@@ -950,7 +979,7 @@ void ItemList::gui_input(const Ref<InputEvent> &p_event) {
 						set_current(i);
 						ensure_current_is_visible();
 						if (select_mode == SELECT_SINGLE) {
-							emit_signal(SNAME("item_selected"), current);
+							emit_signal(SceneStringName(item_selected), current);
 						}
 						break;
 					}
@@ -1001,9 +1030,16 @@ void ItemList::_notification(int p_what) {
 		} break;
 
 		case NOTIFICATION_LAYOUT_DIRECTION_CHANGED:
-		case NOTIFICATION_TRANSLATION_CHANGED:
 		case NOTIFICATION_THEME_CHANGED: {
 			for (int i = 0; i < items.size(); i++) {
+				_shape_text(i);
+			}
+			shape_changed = true;
+			queue_redraw();
+		} break;
+		case NOTIFICATION_TRANSLATION_CHANGED: {
+			for (int i = 0; i < items.size(); i++) {
+				items.write[i].xl_text = _atr(i, items[i].text);
 				_shape_text(i);
 			}
 			shape_changed = true;
@@ -1141,10 +1177,6 @@ void ItemList::_notification(int p_what) {
 				if (should_draw_selected_bg || should_draw_hovered_bg || should_draw_custom_bg) {
 					Rect2 r = rcache;
 					r.position += base_ofs;
-					r.position.y -= theme_cache.v_separation / 2;
-					r.size.y += theme_cache.v_separation;
-					r.position.x -= theme_cache.h_separation / 2;
-					r.size.x += theme_cache.h_separation;
 
 					if (rtl) {
 						r.position.x = size.width - r.position.x - r.size.x;
@@ -1175,6 +1207,12 @@ void ItemList::_notification(int p_what) {
 					Vector2 icon_ofs;
 
 					Point2 pos = items[i].rect_cache.position + icon_ofs + base_ofs;
+
+					if (icon_mode == ICON_MODE_TOP) {
+						pos.y += MAX(theme_cache.v_separation, 0) / 2;
+					} else {
+						pos.x += MAX(theme_cache.h_separation, 0) / 2;
+					}
 
 					if (icon_mode == ICON_MODE_TOP) {
 						pos.x += Math::floor((items[i].rect_cache.size.width - icon_size.width) / 2);
@@ -1214,11 +1252,21 @@ void ItemList::_notification(int p_what) {
 				}
 
 				if (items[i].tag_icon.is_valid()) {
-					Point2 draw_pos = items[i].rect_cache.position;
-					if (rtl) {
-						draw_pos.x = size.width - draw_pos.x - items[i].tag_icon->get_width();
+					Size2 tag_icon_size;
+					if (fixed_tag_icon_size.x > 0 && fixed_tag_icon_size.y > 0) {
+						tag_icon_size = fixed_tag_icon_size;
+					} else {
+						tag_icon_size = items[i].tag_icon->get_size();
 					}
-					draw_texture(items[i].tag_icon, draw_pos + base_ofs);
+
+					Point2 draw_pos = items[i].rect_cache.position;
+					draw_pos.x += MAX(theme_cache.h_separation, 0) / 2;
+					draw_pos.y += MAX(theme_cache.v_separation, 0) / 2;
+					if (rtl) {
+						draw_pos.x = size.width - draw_pos.x - tag_icon_size.x;
+					}
+
+					draw_texture_rect(items[i].tag_icon, Rect2(draw_pos + base_ofs, tag_icon_size));
 				}
 
 				if (!items[i].text.is_empty()) {
@@ -1252,11 +1300,16 @@ void ItemList::_notification(int p_what) {
 						text_ofs += base_ofs;
 						text_ofs += items[i].rect_cache.position;
 
+						text_ofs.y += MAX(theme_cache.v_separation, 0) / 2;
+
 						if (rtl) {
 							text_ofs.x = size.width - text_ofs.x - max_len;
 						}
 
 						items.write[i].text_buf->set_alignment(HORIZONTAL_ALIGNMENT_CENTER);
+
+						float text_w = items[i].rect_cache.size.width;
+						items.write[i].text_buf->set_width(text_w);
 
 						if (theme_cache.font_outline_size > 0 && theme_cache.font_outline_color.a > 0) {
 							items[i].text_buf->draw_outline(get_canvas_item(), text_ofs, theme_cache.font_outline_size, theme_cache.font_outline_color);
@@ -1270,8 +1323,11 @@ void ItemList::_notification(int p_what) {
 
 						if (icon_mode == ICON_MODE_TOP) {
 							text_ofs.x += (items[i].rect_cache.size.width - size2.x) / 2;
+							text_ofs.x += MAX(theme_cache.h_separation, 0) / 2;
+							text_ofs.y += MAX(theme_cache.v_separation, 0) / 2;
 						} else {
 							text_ofs.y += (items[i].rect_cache.size.height - size2.y) / 2;
+							text_ofs.x += MAX(theme_cache.h_separation, 0) / 2;
 						}
 
 						text_ofs += base_ofs;
@@ -1300,10 +1356,6 @@ void ItemList::_notification(int p_what) {
 				if (select_mode == SELECT_MULTI && i == current) {
 					Rect2 r = rcache;
 					r.position += base_ofs;
-					r.position.y -= theme_cache.v_separation / 2;
-					r.size.y += theme_cache.v_separation;
-					r.position.x -= theme_cache.h_separation / 2;
-					r.size.x += theme_cache.h_separation;
 
 					if (rtl) {
 						r.position.x = size.width - r.position.x - r.size.x;
@@ -1373,14 +1425,15 @@ void ItemList::force_update_list_size() {
 		}
 		max_column_width = MAX(max_column_width, minsize.x);
 
-		// elements need to adapt to the selected size
-		minsize.y += theme_cache.v_separation;
-		minsize.x += theme_cache.h_separation;
+		// Elements need to adapt to the selected size.
+		minsize.y += MAX(theme_cache.v_separation, 0);
+		minsize.x += MAX(theme_cache.h_separation, 0);
+
 		items.write[i].rect_cache.size = minsize;
 		items.write[i].min_rect_cache.size = minsize;
 	}
 
-	int fit_size = size.x - theme_cache.panel_style->get_minimum_size().width - scroll_bar_minwidth;
+	int fit_size = size.x - theme_cache.panel_style->get_minimum_size().width;
 
 	//2-attempt best fit
 	current_columns = 0x7FFFFFFF;
@@ -1393,12 +1446,13 @@ void ItemList::force_update_list_size() {
 		bool all_fit = true;
 		Vector2 ofs;
 		int col = 0;
+		int max_w = 0;
 		int max_h = 0;
 
 		separators.clear();
 
 		for (int i = 0; i < items.size(); i++) {
-			if (current_columns > 1 && items[i].rect_cache.size.width + ofs.x > fit_size) {
+			if (current_columns > 1 && items[i].rect_cache.size.width + ofs.x > fit_size && !auto_width) {
 				// Went past.
 				current_columns = MAX(col, 1);
 				all_fit = false;
@@ -1406,29 +1460,36 @@ void ItemList::force_update_list_size() {
 			}
 
 			if (same_column_width) {
-				items.write[i].rect_cache.size.x = max_column_width;
+				items.write[i].rect_cache.size.x = max_column_width + MAX(theme_cache.h_separation, 0);
 			}
 			items.write[i].rect_cache.position = ofs;
 
 			max_h = MAX(max_h, items[i].rect_cache.size.y);
-			ofs.x += items[i].rect_cache.size.x + theme_cache.h_separation;
+			ofs.x += items[i].rect_cache.size.x;
 
 			items.write[i].column = col;
 			col++;
 			if (col == current_columns) {
 				if (i < items.size() - 1) {
-					separators.push_back(ofs.y + max_h + theme_cache.v_separation / 2);
+					separators.push_back(ofs.y + max_h);
 				}
 
 				for (int j = i; j >= 0 && col > 0; j--, col--) {
 					items.write[j].rect_cache.size.y = max_h;
 				}
 
+				max_w = MAX(max_w, ofs.x);
 				ofs.x = 0;
-				ofs.y += max_h + theme_cache.v_separation;
+				ofs.y += max_h;
 				col = 0;
 				max_h = 0;
 			}
+		}
+
+		float page = MAX(0, size.height - theme_cache.panel_style->get_minimum_size().height);
+		float max = MAX(page, ofs.y + max_h);
+		if (page >= max) {
+			fit_size -= scroll_bar_minwidth;
 		}
 
 		if (all_fit) {
@@ -1436,10 +1497,11 @@ void ItemList::force_update_list_size() {
 				items.write[j].rect_cache.size.y = max_h;
 			}
 
-			float page = MAX(0, size.height - theme_cache.panel_style->get_minimum_size().height);
-			float max = MAX(page, ofs.y + max_h);
 			if (auto_height) {
 				auto_height_value = ofs.y + max_h + theme_cache.panel_style->get_minimum_size().height;
+			}
+			if (auto_width) {
+				auto_width_value = max_w + theme_cache.panel_style->get_minimum_size().width;
 			}
 			scroll_bar->set_max(max);
 			scroll_bar->set_page(page);
@@ -1447,6 +1509,7 @@ void ItemList::force_update_list_size() {
 				scroll_bar->set_value(0);
 				scroll_bar->hide();
 			} else {
+				auto_width_value += scroll_bar_minwidth;
 				scroll_bar->show();
 
 				if (do_autoscroll_to_bottom) {
@@ -1472,6 +1535,23 @@ void ItemList::_mouse_exited() {
 	}
 }
 
+String ItemList::_atr(int p_idx, const String &p_text) const {
+	ERR_FAIL_INDEX_V(p_idx, items.size(), atr(p_text));
+	switch (items[p_idx].auto_translate_mode) {
+		case AUTO_TRANSLATE_MODE_INHERIT: {
+			return atr(p_text);
+		} break;
+		case AUTO_TRANSLATE_MODE_ALWAYS: {
+			return tr(p_text);
+		} break;
+		case AUTO_TRANSLATE_MODE_DISABLED: {
+			return p_text;
+		} break;
+	}
+
+	ERR_FAIL_V_MSG(atr(p_text), "Unexpected auto translate mode: " + itos(items[p_idx].auto_translate_mode));
+}
+
 int ItemList::get_item_at_position(const Point2 &p_pos, bool p_exact) const {
 	Vector2 pos = p_pos;
 	pos -= theme_cache.panel_style->get_offset();
@@ -1486,6 +1566,7 @@ int ItemList::get_item_at_position(const Point2 &p_pos, bool p_exact) const {
 
 	for (int i = 0; i < items.size(); i++) {
 		Rect2 rc = items[i].rect_cache;
+
 		if (i % current_columns == current_columns - 1) {
 			rc.size.width = get_size().width - rc.position.x; // Make sure you can still select the last item when clicking past the column.
 		}
@@ -1610,7 +1691,7 @@ Vector<int> ItemList::get_selected_items() {
 	for (int i = 0; i < items.size(); i++) {
 		if (items[i].selected) {
 			selected.push_back(i);
-			if (this->select_mode == SELECT_SINGLE) {
+			if (select_mode == SELECT_SINGLE) {
 				break;
 			}
 		}
@@ -1629,14 +1710,33 @@ bool ItemList::is_anything_selected() {
 }
 
 Size2 ItemList::get_minimum_size() const {
-	if (auto_height) {
-		return Size2(0, auto_height_value);
+	Size2 min_size;
+	if (auto_width) {
+		min_size.x = auto_width_value;
 	}
-	return Size2();
+
+	if (auto_height) {
+		min_size.y = auto_height_value;
+	}
+	return min_size;
 }
 
 void ItemList::set_autoscroll_to_bottom(const bool p_enable) {
 	do_autoscroll_to_bottom = p_enable;
+}
+
+void ItemList::set_auto_width(bool p_enable) {
+	if (auto_width == p_enable) {
+		return;
+	}
+
+	auto_width = p_enable;
+	shape_changed = true;
+	queue_redraw();
+}
+
+bool ItemList::has_auto_width() const {
+	return auto_width;
 }
 
 void ItemList::set_auto_height(bool p_enable) {
@@ -1669,23 +1769,10 @@ TextServer::OverrunBehavior ItemList::get_text_overrun_behavior() const {
 }
 
 bool ItemList::_set(const StringName &p_name, const Variant &p_value) {
-	Vector<String> components = String(p_name).split("/", true, 2);
-	if (components.size() >= 2 && components[0].begins_with("item_") && components[0].trim_prefix("item_").is_valid_int()) {
-		int item_index = components[0].trim_prefix("item_").to_int();
-		if (components[1] == "text") {
-			set_item_text(item_index, p_value);
-			return true;
-		} else if (components[1] == "icon") {
-			set_item_icon(item_index, p_value);
-			return true;
-		} else if (components[1] == "disabled") {
-			set_item_disabled(item_index, p_value);
-			return true;
-		} else if (components[1] == "selectable") {
-			set_item_selectable(item_index, p_value);
-			return true;
-		}
+	if (property_helper.property_set_value(p_name, p_value)) {
+		return true;
 	}
+
 #ifndef DISABLE_DEPRECATED
 	// Compatibility.
 	if (p_name == "items") {
@@ -1707,45 +1794,6 @@ bool ItemList::_set(const StringName &p_name, const Variant &p_value) {
 	return false;
 }
 
-bool ItemList::_get(const StringName &p_name, Variant &r_ret) const {
-	Vector<String> components = String(p_name).split("/", true, 2);
-	if (components.size() >= 2 && components[0].begins_with("item_") && components[0].trim_prefix("item_").is_valid_int()) {
-		int item_index = components[0].trim_prefix("item_").to_int();
-		if (components[1] == "text") {
-			r_ret = get_item_text(item_index);
-			return true;
-		} else if (components[1] == "icon") {
-			r_ret = get_item_icon(item_index);
-			return true;
-		} else if (components[1] == "disabled") {
-			r_ret = is_item_disabled(item_index);
-			return true;
-		} else if (components[1] == "selectable") {
-			r_ret = is_item_selectable(item_index);
-			return true;
-		}
-	}
-	return false;
-}
-
-void ItemList::_get_property_list(List<PropertyInfo> *p_list) const {
-	for (int i = 0; i < items.size(); i++) {
-		p_list->push_back(PropertyInfo(Variant::STRING, vformat("item_%d/text", i)));
-
-		PropertyInfo pi = PropertyInfo(Variant::OBJECT, vformat("item_%d/icon", i), PROPERTY_HINT_RESOURCE_TYPE, "Texture2D");
-		pi.usage &= ~(get_item_icon(i).is_null() ? PROPERTY_USAGE_STORAGE : 0);
-		p_list->push_back(pi);
-
-		pi = PropertyInfo(Variant::BOOL, vformat("item_%d/selectable", i));
-		pi.usage &= ~(is_item_selectable(i) ? PROPERTY_USAGE_STORAGE : 0);
-		p_list->push_back(pi);
-
-		pi = PropertyInfo(Variant::BOOL, vformat("item_%d/disabled", i));
-		pi.usage &= ~(!is_item_disabled(i) ? PROPERTY_USAGE_STORAGE : 0);
-		p_list->push_back(pi);
-	}
-}
-
 void ItemList::_bind_methods() {
 	ClassDB::bind_method(D_METHOD("add_item", "text", "icon", "selectable"), &ItemList::add_item, DEFVAL(Variant()), DEFVAL(true));
 	ClassDB::bind_method(D_METHOD("add_icon_item", "icon", "selectable"), &ItemList::add_icon_item, DEFVAL(true));
@@ -1761,6 +1809,9 @@ void ItemList::_bind_methods() {
 
 	ClassDB::bind_method(D_METHOD("set_item_language", "idx", "language"), &ItemList::set_item_language);
 	ClassDB::bind_method(D_METHOD("get_item_language", "idx"), &ItemList::get_item_language);
+
+	ClassDB::bind_method(D_METHOD("set_item_auto_translate_mode", "idx", "mode"), &ItemList::set_item_auto_translate_mode);
+	ClassDB::bind_method(D_METHOD("get_item_auto_translate_mode", "idx"), &ItemList::get_item_auto_translate_mode);
 
 	ClassDB::bind_method(D_METHOD("set_item_icon_transposed", "idx", "transposed"), &ItemList::set_item_icon_transposed);
 	ClassDB::bind_method(D_METHOD("is_item_icon_transposed", "idx"), &ItemList::is_item_icon_transposed);
@@ -1843,6 +1894,9 @@ void ItemList::_bind_methods() {
 	ClassDB::bind_method(D_METHOD("set_allow_search", "allow"), &ItemList::set_allow_search);
 	ClassDB::bind_method(D_METHOD("get_allow_search"), &ItemList::get_allow_search);
 
+	ClassDB::bind_method(D_METHOD("set_auto_width", "enable"), &ItemList::set_auto_width);
+	ClassDB::bind_method(D_METHOD("has_auto_width"), &ItemList::has_auto_width);
+
 	ClassDB::bind_method(D_METHOD("set_auto_height", "enable"), &ItemList::set_auto_height);
 	ClassDB::bind_method(D_METHOD("has_auto_height"), &ItemList::has_auto_height);
 
@@ -1864,6 +1918,7 @@ void ItemList::_bind_methods() {
 	ADD_PROPERTY(PropertyInfo(Variant::BOOL, "allow_rmb_select"), "set_allow_rmb_select", "get_allow_rmb_select");
 	ADD_PROPERTY(PropertyInfo(Variant::BOOL, "allow_search"), "set_allow_search", "get_allow_search");
 	ADD_PROPERTY(PropertyInfo(Variant::INT, "max_text_lines", PROPERTY_HINT_RANGE, "1,10,1,or_greater"), "set_max_text_lines", "get_max_text_lines");
+	ADD_PROPERTY(PropertyInfo(Variant::BOOL, "auto_width"), "set_auto_width", "has_auto_width");
 	ADD_PROPERTY(PropertyInfo(Variant::BOOL, "auto_height"), "set_auto_height", "has_auto_height");
 	ADD_PROPERTY(PropertyInfo(Variant::INT, "text_overrun_behavior", PROPERTY_HINT_ENUM, "Trim Nothing,Trim Characters,Trim Words,Ellipsis,Word Ellipsis"), "set_text_overrun_behavior", "get_text_overrun_behavior");
 	ADD_ARRAY_COUNT("Items", "item_count", "set_item_count", "get_item_count", "item_");
@@ -1910,17 +1965,29 @@ void ItemList::_bind_methods() {
 	BIND_THEME_ITEM_CUSTOM(Theme::DATA_TYPE_STYLEBOX, ItemList, cursor_style, "cursor_unfocused");
 	BIND_THEME_ITEM_CUSTOM(Theme::DATA_TYPE_STYLEBOX, ItemList, cursor_focus_style, "cursor");
 	BIND_THEME_ITEM(Theme::DATA_TYPE_COLOR, ItemList, guide_color);
+
+	Item defaults(true);
+
+	base_property_helper.set_prefix("item_");
+	base_property_helper.set_array_length_getter(&ItemList::get_item_count);
+	base_property_helper.register_property(PropertyInfo(Variant::STRING, "text"), defaults.text, &ItemList::set_item_text, &ItemList::get_item_text);
+	base_property_helper.register_property(PropertyInfo(Variant::OBJECT, "icon", PROPERTY_HINT_RESOURCE_TYPE, "Texture2D"), defaults.icon, &ItemList::set_item_icon, &ItemList::get_item_icon);
+	base_property_helper.register_property(PropertyInfo(Variant::BOOL, "selectable"), defaults.selectable, &ItemList::set_item_selectable, &ItemList::is_item_selectable);
+	base_property_helper.register_property(PropertyInfo(Variant::BOOL, "disabled"), defaults.disabled, &ItemList::set_item_disabled, &ItemList::is_item_disabled);
+	PropertyListHelper::register_base_helper(&base_property_helper);
 }
 
 ItemList::ItemList() {
 	scroll_bar = memnew(VScrollBar);
 	add_child(scroll_bar, false, INTERNAL_MODE_FRONT);
-	scroll_bar->connect("value_changed", callable_mp(this, &ItemList::_scroll_changed));
+	scroll_bar->connect(SceneStringName(value_changed), callable_mp(this, &ItemList::_scroll_changed));
 
-	connect("mouse_exited", callable_mp(this, &ItemList::_mouse_exited));
+	connect(SceneStringName(mouse_exited), callable_mp(this, &ItemList::_mouse_exited));
 
 	set_focus_mode(FOCUS_ALL);
 	set_clip_contents(true);
+
+	property_helper.setup_for_instance(base_property_helper, this);
 }
 
 ItemList::~ItemList() {

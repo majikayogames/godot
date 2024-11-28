@@ -237,6 +237,7 @@ public:
 	real_t get_baked_length() const;
 	Vector2 sample_baked(real_t p_offset, bool p_cubic = false) const;
 	Transform2D sample_baked_with_rotation(real_t p_offset, bool p_cubic = false) const;
+	PackedVector2Array get_points() const;
 	PackedVector2Array get_baked_points() const; //useful for going through
 	Vector2 get_closest_point(const Vector2 &p_to_point) const;
 	real_t get_closest_offset(const Vector2 &p_to_point) const;
@@ -262,6 +263,8 @@ class Curve3D : public Resource {
 	// For Path3DGizmo.
 	mutable Vector<size_t> points_in_cache;
 #endif
+
+	bool closed = false;
 
 	mutable bool baked_cache_dirty = false;
 	mutable PackedVector3Array baked_point_cache;
@@ -329,6 +332,8 @@ public:
 	Vector3 sample(int p_index, real_t p_offset) const;
 	Vector3 samplef(real_t p_findex) const;
 
+	void set_closed(bool p_closed);
+	bool is_closed() const;
 	void set_bake_interval(real_t p_tolerance);
 	real_t get_bake_interval() const;
 	void set_up_vector_enabled(bool p_enable);
@@ -344,6 +349,7 @@ public:
 	PackedVector3Array get_baked_up_vectors() const;
 	Vector3 get_closest_point(const Vector3 &p_to_point) const;
 	real_t get_closest_offset(const Vector3 &p_to_point) const;
+	PackedVector3Array get_points() const;
 
 	PackedVector3Array tessellate(int p_max_stages = 5, real_t p_tolerance = 4) const; // Useful for display.
 	PackedVector3Array tessellate_even_length(int p_max_stages = 5, real_t p_length = 0.2) const; // Useful for baking.

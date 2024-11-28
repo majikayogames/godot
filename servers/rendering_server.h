@@ -41,6 +41,22 @@
 #include "servers/display_server.h"
 #include "servers/rendering/rendering_device.h"
 
+// Helper macros for code outside of the rendering server, but that is
+// called by the rendering server.
+#ifdef DEBUG_ENABLED
+#define ERR_NOT_ON_RENDER_THREAD                                          \
+	RenderingServer *rendering_server = RenderingServer::get_singleton(); \
+	ERR_FAIL_NULL(rendering_server);                                      \
+	ERR_FAIL_COND(!rendering_server->is_on_render_thread());
+#define ERR_NOT_ON_RENDER_THREAD_V(m_ret)                                 \
+	RenderingServer *rendering_server = RenderingServer::get_singleton(); \
+	ERR_FAIL_NULL_V(rendering_server, m_ret);                             \
+	ERR_FAIL_COND_V(!rendering_server->is_on_render_thread(), m_ret);
+#else
+#define ERR_NOT_ON_RENDER_THREAD
+#define ERR_NOT_ON_RENDER_THREAD_V(m_ret)
+#endif
+
 template <typename T>
 class TypedArray;
 
@@ -71,6 +87,15 @@ protected:
 	static RenderingServer *(*create_func)();
 	static void _bind_methods();
 
+#ifndef DISABLE_DEPRECATED
+	void _environment_set_fog_bind_compat_84792(RID p_env, bool p_enable, const Color &p_light_color, float p_light_energy, float p_sun_scatter, float p_density, float p_height, float p_height_density, float p_aerial_perspective, float p_sky_affect);
+	void _canvas_item_add_multiline_bind_compat_84523(RID p_item, const Vector<Point2> &p_points, const Vector<Color> &p_colors, float p_width = -1.0);
+	void _canvas_item_add_rect_bind_compat_84523(RID p_item, const Rect2 &p_rect, const Color &p_color);
+	void _canvas_item_add_circle_bind_compat_84523(RID p_item, const Point2 &p_pos, float p_radius, const Color &p_color);
+
+	static void _bind_compatibility_methods();
+#endif
+
 public:
 	static RenderingServer *get_singleton();
 	static RenderingServer *create();
@@ -87,6 +112,12 @@ public:
 	};
 
 	/* TEXTURE API */
+
+	enum TextureType {
+		TEXTURE_TYPE_2D,
+		TEXTURE_TYPE_LAYERED,
+		TEXTURE_TYPE_3D,
+	};
 
 	enum TextureLayeredType {
 		TEXTURE_LAYERED_2D_ARRAY,
@@ -106,10 +137,14 @@ public:
 	virtual RID texture_2d_create(const Ref<Image> &p_image) = 0;
 	virtual RID texture_2d_layered_create(const Vector<Ref<Image>> &p_layers, TextureLayeredType p_layered_type) = 0;
 	virtual RID texture_3d_create(Image::Format, int p_width, int p_height, int p_depth, bool p_mipmaps, const Vector<Ref<Image>> &p_data) = 0; //all slices, then all the mipmaps, must be coherent
+	virtual RID texture_external_create(int p_width, int p_height, uint64_t p_external_buffer = 0) = 0;
 	virtual RID texture_proxy_create(RID p_base) = 0;
+
+	virtual RID texture_create_from_native_handle(TextureType p_type, Image::Format p_format, uint64_t p_native_handle, int p_width, int p_height, int p_depth, int p_layers = 1, TextureLayeredType p_layered_type = TEXTURE_LAYERED_2D_ARRAY) = 0;
 
 	virtual void texture_2d_update(RID p_texture, const Ref<Image> &p_image, int p_layer = 0) = 0;
 	virtual void texture_3d_update(RID p_texture, const Vector<Ref<Image>> &p_data) = 0;
+	virtual void texture_external_update(RID p_texture, int p_width, int p_height, uint64_t p_external_buffer = 0) = 0;
 	virtual void texture_proxy_update(RID p_texture, RID p_proxy_to) = 0;
 
 	// These two APIs can be used together or in combination with the others.
@@ -151,7 +186,7 @@ public:
 		uint32_t height;
 		uint32_t depth;
 		Image::Format format;
-		int bytes;
+		int64_t bytes;
 		String path;
 	};
 
@@ -163,6 +198,17 @@ public:
 	virtual RID texture_rd_create(const RID &p_rd_texture, const RenderingServer::TextureLayeredType p_layer_type = RenderingServer::TEXTURE_LAYERED_2D_ARRAY) = 0;
 	virtual RID texture_get_rd_texture(RID p_texture, bool p_srgb = false) const = 0;
 	virtual uint64_t texture_get_native_handle(RID p_texture, bool p_srgb = false) const = 0;
+
+	/* PIPELINES API */
+
+	enum PipelineSource {
+		PIPELINE_SOURCE_CANVAS,
+		PIPELINE_SOURCE_MESH,
+		PIPELINE_SOURCE_SURFACE,
+		PIPELINE_SOURCE_DRAW,
+		PIPELINE_SOURCE_SPECIALIZATION,
+		PIPELINE_SOURCE_MAX
+	};
 
 	/* SHADER API */
 
@@ -176,6 +222,7 @@ public:
 	};
 
 	virtual RID shader_create() = 0;
+	virtual RID shader_create_from_code(const String &p_code, const String &p_path_hint = String()) = 0;
 
 	virtual void shader_set_code(RID p_shader, const String &p_code) = 0;
 	virtual void shader_set_path_hint(RID p_shader, const String &p_path) = 0;
@@ -207,6 +254,7 @@ public:
 	};
 
 	virtual RID material_create() = 0;
+	virtual RID material_create_from_shader(RID p_next_pass, int p_render_priority, RID p_shader) = 0;
 
 	virtual void material_set_shader(RID p_shader_material, RID p_shader) = 0;
 
@@ -328,6 +376,10 @@ public:
 		Vector<LOD> lods;
 		Vector<AABB> bone_aabbs;
 
+		// Transforms used in runtime bone AABBs compute.
+		// Since bone AABBs is saved in Mesh space, but bones is in Skeleton space.
+		Transform3D mesh_to_skeleton_xform;
+
 		Vector<uint8_t> blend_shape_data;
 
 		Vector4 uv_scale;
@@ -381,6 +433,9 @@ public:
 	virtual void mesh_set_custom_aabb(RID p_mesh, const AABB &p_aabb) = 0;
 	virtual AABB mesh_get_custom_aabb(RID p_mesh) const = 0;
 
+	virtual void mesh_set_path(RID p_mesh, const String &p_path) = 0;
+	virtual String mesh_get_path(RID p_mesh) const = 0;
+
 	virtual void mesh_set_shadow_mesh(RID p_mesh, RID p_shadow_mesh) = 0;
 
 	virtual void mesh_clear(RID p_mesh) = 0;
@@ -392,6 +447,11 @@ public:
 	enum MultimeshTransformFormat {
 		MULTIMESH_TRANSFORM_2D,
 		MULTIMESH_TRANSFORM_3D,
+	};
+
+	enum MultimeshPhysicsInterpolationQuality {
+		MULTIMESH_INTERP_QUALITY_FAST,
+		MULTIMESH_INTERP_QUALITY_HIGH,
 	};
 
 	virtual void multimesh_allocate_data(RID p_multimesh, int p_instances, MultimeshTransformFormat p_transform_format, bool p_use_colors = false, bool p_use_custom_data = false) = 0;
@@ -406,13 +466,23 @@ public:
 	virtual RID multimesh_get_mesh(RID p_multimesh) const = 0;
 	virtual AABB multimesh_get_aabb(RID p_multimesh) const = 0;
 
+	virtual void multimesh_set_custom_aabb(RID p_mesh, const AABB &p_aabb) = 0;
+	virtual AABB multimesh_get_custom_aabb(RID p_mesh) const = 0;
+
 	virtual Transform3D multimesh_instance_get_transform(RID p_multimesh, int p_index) const = 0;
 	virtual Transform2D multimesh_instance_get_transform_2d(RID p_multimesh, int p_index) const = 0;
 	virtual Color multimesh_instance_get_color(RID p_multimesh, int p_index) const = 0;
 	virtual Color multimesh_instance_get_custom_data(RID p_multimesh, int p_index) const = 0;
 
 	virtual void multimesh_set_buffer(RID p_multimesh, const Vector<float> &p_buffer) = 0;
+	virtual RID multimesh_get_buffer_rd_rid(RID p_multimesh) const = 0;
 	virtual Vector<float> multimesh_get_buffer(RID p_multimesh) const = 0;
+
+	// Interpolation.
+	virtual void multimesh_set_buffer_interpolated(RID p_multimesh, const Vector<float> &p_buffer_curr, const Vector<float> &p_buffer_prev) = 0;
+	virtual void multimesh_set_physics_interpolated(RID p_multimesh, bool p_interpolated) = 0;
+	virtual void multimesh_set_physics_interpolation_quality(RID p_multimesh, MultimeshPhysicsInterpolationQuality p_quality) = 0;
+	virtual void multimesh_instance_reset_physics_interpolation(RID p_multimesh, int p_index) = 0;
 
 	virtual void multimesh_set_visible_instances(RID p_multimesh, int p_visible) = 0;
 	virtual int multimesh_get_visible_instances(RID p_multimesh) const = 0;
@@ -473,6 +543,7 @@ public:
 	virtual void light_set_cull_mask(RID p_light, uint32_t p_mask) = 0;
 	virtual void light_set_distance_fade(RID p_light, bool p_enabled, float p_begin, float p_shadow, float p_length) = 0;
 	virtual void light_set_reverse_cull_face_mode(RID p_light, bool p_enabled) = 0;
+	virtual void light_set_shadow_caster_mask(RID p_light, uint32_t p_caster_mask) = 0;
 
 	enum LightBakeMode {
 		LIGHT_BAKE_DISABLED,
@@ -568,6 +639,7 @@ public:
 	virtual void reflection_probe_set_enable_box_projection(RID p_probe, bool p_enable) = 0;
 	virtual void reflection_probe_set_enable_shadows(RID p_probe, bool p_enable) = 0;
 	virtual void reflection_probe_set_cull_mask(RID p_probe, uint32_t p_layers) = 0;
+	virtual void reflection_probe_set_reflection_mask(RID p_probe, uint32_t p_layers) = 0;
 	virtual void reflection_probe_set_resolution(RID p_probe, int p_resolution) = 0;
 	virtual void reflection_probe_set_mesh_lod_threshold(RID p_probe, float p_pixels) = 0;
 
@@ -650,6 +722,8 @@ public:
 	virtual PackedInt32Array lightmap_get_probe_capture_bsp_tree(RID p_lightmap) const = 0;
 
 	virtual void lightmap_set_probe_capture_update_speed(float p_speed) = 0;
+
+	virtual void lightmaps_set_bicubic_filter(bool p_enable) = 0;
 
 	/* PARTICLES API */
 
@@ -801,6 +875,7 @@ public:
 	virtual void camera_set_cull_mask(RID p_camera, uint32_t p_layers) = 0;
 	virtual void camera_set_environment(RID p_camera, RID p_env) = 0;
 	virtual void camera_set_camera_attributes(RID p_camera, RID p_camera_attributes) = 0;
+	virtual void camera_set_compositor(RID p_camera, RID p_compositor) = 0;
 	virtual void camera_set_use_vertical_aspect(RID p_camera, bool p_enable) = 0;
 
 	/* VIEWPORT API */
@@ -857,6 +932,7 @@ public:
 	};
 
 	virtual void viewport_set_update_mode(RID p_viewport, ViewportUpdateMode p_mode) = 0;
+	virtual ViewportUpdateMode viewport_get_update_mode(RID p_viewport) const = 0;
 
 	enum ViewportClearMode {
 		VIEWPORT_CLEAR_ALWAYS,
@@ -887,6 +963,7 @@ public:
 	virtual void viewport_set_canvas_transform(RID p_viewport, RID p_canvas, const Transform2D &p_offset) = 0;
 	virtual void viewport_set_transparent_background(RID p_viewport, bool p_enabled) = 0;
 	virtual void viewport_set_use_hdr_2d(RID p_viewport, bool p_use_hdr) = 0;
+	virtual bool viewport_is_using_hdr_2d(RID p_viewport) const = 0;
 	virtual void viewport_set_snap_2d_transforms_to_pixel(RID p_viewport, bool p_enabled) = 0;
 	virtual void viewport_set_snap_2d_vertices_to_pixel(RID p_viewport, bool p_enabled) = 0;
 
@@ -962,6 +1039,7 @@ public:
 	enum ViewportRenderInfoType {
 		VIEWPORT_RENDER_INFO_TYPE_VISIBLE,
 		VIEWPORT_RENDER_INFO_TYPE_SHADOW,
+		VIEWPORT_RENDER_INFO_TYPE_CANVAS,
 		VIEWPORT_RENDER_INFO_TYPE_MAX
 	};
 
@@ -1012,7 +1090,15 @@ public:
 		VIEWPORT_VRS_MAX,
 	};
 
+	enum ViewportVRSUpdateMode {
+		VIEWPORT_VRS_UPDATE_DISABLED,
+		VIEWPORT_VRS_UPDATE_ONCE,
+		VIEWPORT_VRS_UPDATE_ALWAYS,
+		VIEWPORT_VRS_UPDATE_MAX,
+	};
+
 	virtual void viewport_set_vrs_mode(RID p_viewport, ViewportVRSMode p_mode) = 0;
+	virtual void viewport_set_vrs_update_mode(RID p_viewport, ViewportVRSUpdateMode p_mode) = 0;
 	virtual void viewport_set_vrs_texture(RID p_viewport, RID p_texture) = 0;
 
 	/* SKY API */
@@ -1029,6 +1115,37 @@ public:
 	virtual void sky_set_mode(RID p_sky, SkyMode p_mode) = 0;
 	virtual void sky_set_material(RID p_sky, RID p_material) = 0;
 	virtual Ref<Image> sky_bake_panorama(RID p_sky, float p_energy, bool p_bake_irradiance, const Size2i &p_size) = 0;
+
+	/* COMPOSITOR EFFECTS API */
+
+	enum CompositorEffectFlags {
+		COMPOSITOR_EFFECT_FLAG_ACCESS_RESOLVED_COLOR = 1,
+		COMPOSITOR_EFFECT_FLAG_ACCESS_RESOLVED_DEPTH = 2,
+		COMPOSITOR_EFFECT_FLAG_NEEDS_MOTION_VECTORS = 4,
+		COMPOSITOR_EFFECT_FLAG_NEEDS_ROUGHNESS = 8,
+		COMPOSITOR_EFFECT_FLAG_NEEDS_SEPARATE_SPECULAR = 16,
+	};
+
+	enum CompositorEffectCallbackType {
+		COMPOSITOR_EFFECT_CALLBACK_TYPE_PRE_OPAQUE,
+		COMPOSITOR_EFFECT_CALLBACK_TYPE_POST_OPAQUE,
+		COMPOSITOR_EFFECT_CALLBACK_TYPE_POST_SKY,
+		COMPOSITOR_EFFECT_CALLBACK_TYPE_PRE_TRANSPARENT,
+		COMPOSITOR_EFFECT_CALLBACK_TYPE_POST_TRANSPARENT,
+		COMPOSITOR_EFFECT_CALLBACK_TYPE_MAX,
+		COMPOSITOR_EFFECT_CALLBACK_TYPE_ANY = -1,
+	};
+
+	virtual RID compositor_effect_create() = 0;
+	virtual void compositor_effect_set_enabled(RID p_effect, bool p_enabled) = 0;
+	virtual void compositor_effect_set_callback(RID p_effect, CompositorEffectCallbackType p_callback_type, const Callable &p_callback) = 0;
+	virtual void compositor_effect_set_flag(RID p_effect, CompositorEffectFlags p_flag, bool p_set) = 0;
+
+	/* COMPOSITOR API */
+
+	virtual RID compositor_create() = 0;
+
+	virtual void compositor_set_compositor_effects(RID p_compositor, const TypedArray<RID> &p_effects) = 0;
 
 	/* ENVIRONMENT API */
 
@@ -1065,6 +1182,7 @@ public:
 	virtual void environment_set_bg_energy(RID p_env, float p_multiplier, float p_exposure_value) = 0;
 	virtual void environment_set_canvas_max_layer(RID p_env, int p_max_layer) = 0;
 	virtual void environment_set_ambient_light(RID p_env, const Color &p_color, EnvironmentAmbientSource p_ambient = ENV_AMBIENT_SOURCE_BG, float p_energy = 1.0, float p_sky_contribution = 0.0, EnvironmentReflectionSource p_reflection_source = ENV_REFLECTION_SOURCE_BG) = 0;
+	virtual void environment_set_camera_feed_id(RID p_env, int p_camera_feed_id) = 0;
 
 	enum EnvironmentGlowBlendMode {
 		ENV_GLOW_BLEND_MODE_ADDITIVE,
@@ -1167,7 +1285,13 @@ public:
 
 	virtual void environment_set_sdfgi_frames_to_update_light(EnvironmentSDFGIFramesToUpdateLight p_update) = 0;
 
-	virtual void environment_set_fog(RID p_env, bool p_enable, const Color &p_light_color, float p_light_energy, float p_sun_scatter, float p_density, float p_height, float p_height_density, float p_aerial_perspective, float p_sky_affect) = 0;
+	enum EnvironmentFogMode {
+		ENV_FOG_MODE_EXPONENTIAL,
+		ENV_FOG_MODE_DEPTH,
+	};
+
+	virtual void environment_set_fog(RID p_env, bool p_enable, const Color &p_light_color, float p_light_energy, float p_sun_scatter, float p_density, float p_height, float p_height_density, float p_aerial_perspective, float p_sky_affect, EnvironmentFogMode p_mode = EnvironmentFogMode::ENV_FOG_MODE_EXPONENTIAL) = 0;
+	virtual void environment_set_fog_depth(RID p_env, float p_curve, float p_begin, float p_end) = 0;
 
 	virtual void environment_set_volumetric_fog(RID p_env, bool p_enable, float p_density, const Color &p_albedo, const Color &p_emission, float p_emission_energy, float p_anisotropy, float p_length, float p_detail_spread, float p_gi_inject, bool p_temporal_reprojection, float p_temporal_reprojection_amount, float p_ambient_inject, float p_sky_affect) = 0;
 	virtual void environment_set_volumetric_fog_volume_size(int p_size, int p_depth) = 0;
@@ -1219,6 +1343,7 @@ public:
 	virtual void scenario_set_environment(RID p_scenario, RID p_environment) = 0;
 	virtual void scenario_set_fallback_environment(RID p_scenario, RID p_environment) = 0;
 	virtual void scenario_set_camera_attributes(RID p_scenario, RID p_camera_attributes) = 0;
+	virtual void scenario_set_compositor(RID p_scenario, RID p_compositor) = 0;
 
 	/* INSTANCING API */
 
@@ -1250,6 +1375,8 @@ public:
 	virtual void instance_set_layer_mask(RID p_instance, uint32_t p_mask) = 0;
 	virtual void instance_set_pivot_data(RID p_instance, float p_sorting_offset, bool p_use_aabb_center) = 0;
 	virtual void instance_set_transform(RID p_instance, const Transform3D &p_transform) = 0;
+	virtual void instance_set_interpolated(RID p_instance, bool p_interpolated) = 0;
+	virtual void instance_reset_physics_interpolation(RID p_instance) = 0;
 	virtual void instance_attach_object_instance_id(RID p_instance, ObjectID p_id) = 0;
 	virtual void instance_set_blend_shape_weight(RID p_instance, int p_shape, float p_weight) = 0;
 	virtual void instance_set_surface_override_material(RID p_instance, int p_surface, RID p_material) = 0;
@@ -1323,6 +1450,7 @@ public:
 
 	virtual RID canvas_create() = 0;
 	virtual void canvas_set_item_mirroring(RID p_canvas, RID p_item, const Point2 &p_mirroring) = 0;
+	virtual void canvas_set_item_repeat(RID p_item, const Point2 &p_repeat_size, int p_repeat_times) = 0;
 	virtual void canvas_set_modulate(RID p_canvas, const Color &p_color) = 0;
 	virtual void canvas_set_parent(RID p_canvas, RID p_parent, float p_scale) = 0;
 
@@ -1374,9 +1502,9 @@ public:
 
 	virtual void canvas_item_add_line(RID p_item, const Point2 &p_from, const Point2 &p_to, const Color &p_color, float p_width = -1.0, bool p_antialiased = false) = 0;
 	virtual void canvas_item_add_polyline(RID p_item, const Vector<Point2> &p_points, const Vector<Color> &p_colors, float p_width = -1.0, bool p_antialiased = false) = 0;
-	virtual void canvas_item_add_multiline(RID p_item, const Vector<Point2> &p_points, const Vector<Color> &p_colors, float p_width = -1.0) = 0;
-	virtual void canvas_item_add_rect(RID p_item, const Rect2 &p_rect, const Color &p_color) = 0;
-	virtual void canvas_item_add_circle(RID p_item, const Point2 &p_pos, float p_radius, const Color &p_color) = 0;
+	virtual void canvas_item_add_multiline(RID p_item, const Vector<Point2> &p_points, const Vector<Color> &p_colors, float p_width = -1.0, bool p_antialiased = false) = 0;
+	virtual void canvas_item_add_rect(RID p_item, const Rect2 &p_rect, const Color &p_color, bool p_antialiased = false) = 0;
+	virtual void canvas_item_add_circle(RID p_item, const Point2 &p_pos, float p_radius, const Color &p_color, bool p_antialiased = false) = 0;
 	virtual void canvas_item_add_texture_rect(RID p_item, const Rect2 &p_rect, RID p_texture, bool p_tile = false, const Color &p_modulate = Color(1, 1, 1), bool p_transpose = false) = 0;
 	virtual void canvas_item_add_texture_rect_region(RID p_item, const Rect2 &p_rect, RID p_texture, const Rect2 &p_src_rect, const Color &p_modulate = Color(1, 1, 1), bool p_transpose = false, bool p_clip_uv = false) = 0;
 	virtual void canvas_item_add_msdf_texture_rect_region(RID p_item, const Rect2 &p_rect, RID p_texture, const Rect2 &p_src_rect, const Color &p_modulate = Color(1, 1, 1), int p_outline_size = 0, float p_px_range = 1.0, float p_scale = 1.0) = 0;
@@ -1419,6 +1547,10 @@ public:
 
 	virtual void canvas_item_set_debug_redraw(bool p_enabled) = 0;
 	virtual bool canvas_item_get_debug_redraw() const = 0;
+
+	virtual void canvas_item_set_interpolated(RID p_item, bool p_interpolated) = 0;
+	virtual void canvas_item_reset_physics_interpolation(RID p_item) = 0;
+	virtual void canvas_item_transform_physics_interpolation(RID p_item, const Transform2D &p_transform) = 0;
 
 	/* CANVAS LIGHT */
 	virtual RID canvas_light_create() = 0;
@@ -1467,6 +1599,10 @@ public:
 	virtual void canvas_light_set_shadow_color(RID p_light, const Color &p_color) = 0;
 	virtual void canvas_light_set_shadow_smooth(RID p_light, float p_smooth) = 0;
 
+	virtual void canvas_light_set_interpolated(RID p_light, bool p_interpolated) = 0;
+	virtual void canvas_light_reset_physics_interpolation(RID p_light) = 0;
+	virtual void canvas_light_transform_physics_interpolation(RID p_light, const Transform2D &p_transform) = 0;
+
 	/* CANVAS LIGHT OCCLUDER */
 
 	virtual RID canvas_light_occluder_create() = 0;
@@ -1476,6 +1612,10 @@ public:
 	virtual void canvas_light_occluder_set_as_sdf_collision(RID p_occluder, bool p_enable) = 0;
 	virtual void canvas_light_occluder_set_transform(RID p_occluder, const Transform2D &p_xform) = 0;
 	virtual void canvas_light_occluder_set_light_mask(RID p_occluder, int p_mask) = 0;
+
+	virtual void canvas_light_occluder_set_interpolated(RID p_occluder, bool p_interpolated) = 0;
+	virtual void canvas_light_occluder_reset_physics_interpolation(RID p_occluder) = 0;
+	virtual void canvas_light_occluder_transform_physics_interpolation(RID p_occluder, const Transform2D &p_transform) = 0;
 
 	/* CANVAS LIGHT OCCLUDER POLYGON */
 
@@ -1491,6 +1631,9 @@ public:
 	virtual void canvas_occluder_polygon_set_cull_mode(RID p_occluder_polygon, CanvasOccluderPolygonCullMode p_mode) = 0;
 
 	virtual void canvas_set_shadow_texture_size(int p_size) = 0;
+
+	Rect2 debug_canvas_item_get_rect(RID p_item);
+	virtual Rect2 _debug_canvas_item_get_rect(RID p_item) = 0;
 
 	/* GLOBAL SHADER UNIFORMS */
 
@@ -1523,6 +1666,7 @@ public:
 		GLOBAL_VAR_TYPE_SAMPLER2DARRAY,
 		GLOBAL_VAR_TYPE_SAMPLER3D,
 		GLOBAL_VAR_TYPE_SAMPLERCUBE,
+		GLOBAL_VAR_TYPE_SAMPLEREXT,
 		GLOBAL_VAR_TYPE_MAX
 	};
 
@@ -1545,6 +1689,10 @@ public:
 
 	virtual void free(RID p_rid) = 0; // Free RIDs associated with the rendering server.
 
+	/* INTERPOLATION */
+
+	virtual void set_physics_interpolation_enabled(bool p_enabled) = 0;
+
 	/* EVENT QUEUING */
 
 	virtual void request_frame_drawn_callback(const Callable &p_callable) = 0;
@@ -1554,6 +1702,8 @@ public:
 	virtual bool has_changed() const = 0;
 	virtual void init();
 	virtual void finish() = 0;
+	virtual void tick() = 0;
+	virtual void pre_draw(bool p_will_draw) = 0;
 
 	/* STATUS INFORMATION */
 
@@ -1564,6 +1714,11 @@ public:
 		RENDERING_INFO_TEXTURE_MEM_USED,
 		RENDERING_INFO_BUFFER_MEM_USED,
 		RENDERING_INFO_VIDEO_MEM_USED,
+		RENDERING_INFO_PIPELINE_COMPILATIONS_CANVAS,
+		RENDERING_INFO_PIPELINE_COMPILATIONS_MESH,
+		RENDERING_INFO_PIPELINE_COMPILATIONS_SURFACE,
+		RENDERING_INFO_PIPELINE_COMPILATIONS_DRAW,
+		RENDERING_INFO_PIPELINE_COMPILATIONS_SPECIALIZATION,
 		RENDERING_INFO_MAX
 	};
 
@@ -1605,13 +1760,14 @@ public:
 	virtual Color get_default_clear_color() = 0;
 	virtual void set_default_clear_color(const Color &p_color) = 0;
 
+#ifndef DISABLE_DEPRECATED
+	// Never actually used, should be removed when we can break compatibility.
 	enum Features {
 		FEATURE_SHADERS,
 		FEATURE_MULTITHREADED,
 	};
-
 	virtual bool has_feature(Features p_feature) const = 0;
-
+#endif
 	virtual bool has_os_feature(const String &p_feature) const = 0;
 
 	virtual void set_debug_generate_wireframes(bool p_generate) = 0;
@@ -1630,7 +1786,15 @@ public:
 	bool is_render_loop_enabled() const;
 	void set_render_loop_enabled(bool p_enabled);
 
+	virtual bool is_on_render_thread() = 0;
 	virtual void call_on_render_thread(const Callable &p_callable) = 0;
+
+	String get_current_rendering_driver_name() const;
+	String get_current_rendering_method() const;
+
+#ifdef TOOLS_ENABLED
+	virtual void get_argument_options(const StringName &p_function, int p_idx, List<String> *r_options) const override;
+#endif
 
 	RenderingServer();
 	virtual ~RenderingServer();
@@ -1665,8 +1829,10 @@ private:
 };
 
 // Make variant understand the enums.
+VARIANT_ENUM_CAST(RenderingServer::TextureType);
 VARIANT_ENUM_CAST(RenderingServer::TextureLayeredType);
 VARIANT_ENUM_CAST(RenderingServer::CubeMapLayer);
+VARIANT_ENUM_CAST(RenderingServer::PipelineSource);
 VARIANT_ENUM_CAST(RenderingServer::ShaderMode);
 VARIANT_ENUM_CAST(RenderingServer::ArrayType);
 VARIANT_BITFIELD_CAST(RenderingServer::ArrayFormat);
@@ -1674,6 +1840,7 @@ VARIANT_ENUM_CAST(RenderingServer::ArrayCustomFormat);
 VARIANT_ENUM_CAST(RenderingServer::PrimitiveType);
 VARIANT_ENUM_CAST(RenderingServer::BlendShapeMode);
 VARIANT_ENUM_CAST(RenderingServer::MultimeshTransformFormat);
+VARIANT_ENUM_CAST(RenderingServer::MultimeshPhysicsInterpolationQuality);
 VARIANT_ENUM_CAST(RenderingServer::LightType);
 VARIANT_ENUM_CAST(RenderingServer::LightParam);
 VARIANT_ENUM_CAST(RenderingServer::LightBakeMode);
@@ -1706,11 +1873,15 @@ VARIANT_ENUM_CAST(RenderingServer::ViewportOcclusionCullingBuildQuality);
 VARIANT_ENUM_CAST(RenderingServer::ViewportSDFOversize);
 VARIANT_ENUM_CAST(RenderingServer::ViewportSDFScale);
 VARIANT_ENUM_CAST(RenderingServer::ViewportVRSMode);
+VARIANT_ENUM_CAST(RenderingServer::ViewportVRSUpdateMode);
 VARIANT_ENUM_CAST(RenderingServer::SkyMode);
+VARIANT_ENUM_CAST(RenderingServer::CompositorEffectCallbackType);
+VARIANT_ENUM_CAST(RenderingServer::CompositorEffectFlags);
 VARIANT_ENUM_CAST(RenderingServer::EnvironmentBG);
 VARIANT_ENUM_CAST(RenderingServer::EnvironmentAmbientSource);
 VARIANT_ENUM_CAST(RenderingServer::EnvironmentReflectionSource);
 VARIANT_ENUM_CAST(RenderingServer::EnvironmentGlowBlendMode);
+VARIANT_ENUM_CAST(RenderingServer::EnvironmentFogMode);
 VARIANT_ENUM_CAST(RenderingServer::EnvironmentToneMapper);
 VARIANT_ENUM_CAST(RenderingServer::EnvironmentSSRRoughnessQuality);
 VARIANT_ENUM_CAST(RenderingServer::EnvironmentSSAOQuality);
@@ -1737,9 +1908,12 @@ VARIANT_ENUM_CAST(RenderingServer::CanvasLightShadowFilter);
 VARIANT_ENUM_CAST(RenderingServer::CanvasOccluderPolygonCullMode);
 VARIANT_ENUM_CAST(RenderingServer::GlobalShaderParameterType);
 VARIANT_ENUM_CAST(RenderingServer::RenderingInfo);
-VARIANT_ENUM_CAST(RenderingServer::Features);
 VARIANT_ENUM_CAST(RenderingServer::CanvasTextureChannel);
 VARIANT_ENUM_CAST(RenderingServer::BakeChannels);
+
+#ifndef DISABLE_DEPRECATED
+VARIANT_ENUM_CAST(RenderingServer::Features);
+#endif
 
 // Alias to make it easier to use.
 #define RS RenderingServer

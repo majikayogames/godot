@@ -69,6 +69,8 @@ public:
 	RD_SETGET(RD::TextureType, texture_type)
 	RD_SETGET(RD::TextureSamples, samples)
 	RD_SETGET(BitField<RenderingDevice::TextureUsageBits>, usage_bits)
+	RD_SETGET(bool, is_resolve_buffer)
+	RD_SETGET(bool, is_discardable)
 
 	void add_shareable_format(RD::DataFormat p_format) { base.shareable_formats.push_back(p_format); }
 	void remove_shareable_format(RD::DataFormat p_format) { base.shareable_formats.erase(p_format); }
@@ -84,6 +86,9 @@ protected:
 		RD_BIND(Variant::INT, RDTextureFormat, texture_type);
 		RD_BIND(Variant::INT, RDTextureFormat, samples);
 		RD_BIND(Variant::INT, RDTextureFormat, usage_bits);
+		RD_BIND(Variant::BOOL, RDTextureFormat, is_resolve_buffer);
+		RD_BIND(Variant::BOOL, RDTextureFormat, is_discardable);
+
 		ClassDB::bind_method(D_METHOD("add_shareable_format", "format"), &RDTextureFormat::add_shareable_format);
 		ClassDB::bind_method(D_METHOD("remove_shareable_format", "format"), &RDTextureFormat::remove_shareable_format);
 	}
@@ -134,6 +139,7 @@ protected:
 class RDFramebufferPass : public RefCounted {
 	GDCLASS(RDFramebufferPass, RefCounted)
 	friend class RenderingDevice;
+	friend class FramebufferCacheRD;
 
 	RD::FramebufferPass base;
 
@@ -289,7 +295,7 @@ public:
 			if (bytecode[i].size()) {
 				RD::ShaderStageSPIRVData stage;
 				stage.shader_stage = RD::ShaderStage(i);
-				stage.spir_v = bytecode[i];
+				stage.spirv = bytecode[i];
 				stages.push_back(stage);
 			}
 		}
@@ -443,6 +449,7 @@ protected:
 class RDUniform : public RefCounted {
 	GDCLASS(RDUniform, RefCounted)
 	friend class RenderingDevice;
+	friend class UniformSetCacheRD;
 	RD::Uniform base;
 
 public:

@@ -34,7 +34,6 @@
 #include "scene/main/viewport.h"
 #include "scene/resources/theme.h"
 
-class Control;
 class Font;
 class Shortcut;
 class StyleBox;
@@ -63,6 +62,7 @@ public:
 		FLAG_POPUP = DisplayServer::WINDOW_FLAG_POPUP,
 		FLAG_EXTEND_TO_TITLE = DisplayServer::WINDOW_FLAG_EXTEND_TO_TITLE,
 		FLAG_MOUSE_PASSTHROUGH = DisplayServer::WINDOW_FLAG_MOUSE_PASSTHROUGH,
+		FLAG_SHARP_CORNERS = DisplayServer::WINDOW_FLAG_SHARP_CORNERS,
 		FLAG_MAX = DisplayServer::WINDOW_FLAG_MAX,
 	};
 
@@ -87,9 +87,14 @@ public:
 
 	enum LayoutDirection {
 		LAYOUT_DIRECTION_INHERITED,
-		LAYOUT_DIRECTION_LOCALE,
+		LAYOUT_DIRECTION_APPLICATION_LOCALE,
 		LAYOUT_DIRECTION_LTR,
-		LAYOUT_DIRECTION_RTL
+		LAYOUT_DIRECTION_RTL,
+		LAYOUT_DIRECTION_SYSTEM_LOCALE,
+		LAYOUT_DIRECTION_MAX,
+#ifndef DISABLE_DEPRECATED
+		LAYOUT_DIRECTION_LOCALE = LAYOUT_DIRECTION_APPLICATION_LOCALE,
+#endif // DISABLE_DEPRECATED
 	};
 
 	enum {
@@ -123,9 +128,11 @@ private:
 	bool visible = true;
 	bool focused = false;
 	WindowInitialPosition initial_position = WINDOW_INITIAL_POSITION_ABSOLUTE;
+	bool force_native = false;
 
 	bool use_font_oversampling = false;
 	bool transient = false;
+	bool transient_to_focused = false;
 	bool exclusive = false;
 	bool wrap_controls = false;
 	bool updating_child_controls = false;
@@ -135,8 +142,6 @@ private:
 	bool keep_title_visible = false;
 
 	LayoutDirection layout_dir = LAYOUT_DIRECTION_INHERITED;
-
-	bool auto_translate = true;
 
 	void _update_child_controls();
 	void _update_embedded_window();
@@ -215,6 +220,8 @@ private:
 		int resize_margin = 0;
 	} theme_cache;
 
+	void _settings_changed();
+
 	Viewport *embedder = nullptr;
 
 	Transform2D window_transform;
@@ -234,11 +241,14 @@ private:
 
 	Ref<Shortcut> debugger_stop_shortcut;
 
+	static int root_layout_direction;
+
 protected:
 	virtual Rect2i _popup_adjust_rect() const { return Rect2i(); }
 	virtual void _post_popup() {}
 
 	virtual void _update_theme_item_cache();
+	virtual void _input_from_window(const Ref<InputEvent> &p_event) {}
 
 	void _notification(int p_what);
 	static void _bind_methods();
@@ -260,11 +270,17 @@ public:
 		NOTIFICATION_THEME_CHANGED = 32
 	};
 
+	static void set_root_layout_direction(int p_root_dir);
+
 	void set_title(const String &p_title);
 	String get_title() const;
+	String get_translated_title() const;
 
 	void set_initial_position(WindowInitialPosition p_initial_position);
 	WindowInitialPosition get_initial_position() const;
+
+	void set_force_native(bool p_force_native);
+	bool get_force_native() const;
 
 	void set_current_screen(int p_screen);
 	int get_current_screen() const;
@@ -295,7 +311,9 @@ public:
 	bool is_maximize_allowed() const;
 
 	void request_attention();
+#ifndef DISABLE_DEPRECATED
 	void move_to_foreground();
+#endif // DISABLE_DEPRECATED
 
 	virtual void set_visible(bool p_visible);
 	bool is_visible() const;
@@ -307,6 +325,9 @@ public:
 
 	void set_transient(bool p_transient);
 	bool is_transient() const;
+
+	void set_transient_to_focused(bool p_transient_to_focused);
+	bool is_transient_to_focused() const;
 
 	void set_exclusive(bool p_exclusive);
 	bool is_exclusive() const;
@@ -354,7 +375,7 @@ public:
 	bool is_wrapping_controls() const;
 	void child_controls_changed();
 
-	Window *get_exclusive_child() const { return exclusive_child; };
+	Window *get_exclusive_child() const { return exclusive_child; }
 	Window *get_parent_visible_window() const;
 	Viewport *get_parent_viewport() const;
 
@@ -377,15 +398,18 @@ public:
 	void grab_focus();
 	bool has_focus() const;
 
+	Rect2i get_usable_parent_rect() const;
+
+	// Internationalization.
+
 	void set_layout_direction(LayoutDirection p_direction);
 	LayoutDirection get_layout_direction() const;
 	bool is_layout_rtl() const;
 
+#ifndef DISABLE_DEPRECATED
 	void set_auto_translate(bool p_enable);
 	bool is_auto_translating() const;
-	_FORCE_INLINE_ String atr(const String p_string) const { return is_auto_translating() ? tr(p_string) : p_string; };
-
-	Rect2i get_usable_parent_rect() const;
+#endif
 
 	// Theming.
 
@@ -452,7 +476,7 @@ public:
 	virtual Transform2D get_final_transform() const override;
 	virtual Transform2D get_screen_transform_internal(bool p_absolute_position = false) const override;
 	virtual Transform2D get_popup_base_transform() const override;
-	virtual bool is_directly_attached_to_screen() const override;
+	virtual Viewport *get_section_root_viewport() const override;
 	virtual bool is_attached_in_viewport() const override;
 
 	Rect2i get_parent_rect() const;

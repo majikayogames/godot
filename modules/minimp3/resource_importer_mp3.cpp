@@ -89,7 +89,7 @@ bool ResourceImporterMP3::has_advanced_options() const {
 void ResourceImporterMP3::show_advanced_options(const String &p_path) {
 	Ref<AudioStreamMP3> mp3_stream = import_mp3(p_path);
 	if (mp3_stream.is_valid()) {
-		AudioStreamImportSettings::get_singleton()->edit(p_path, "mp3", mp3_stream);
+		AudioStreamImportSettingsDialog::get_singleton()->edit(p_path, "mp3", mp3_stream);
 	}
 }
 #endif
@@ -110,12 +110,12 @@ Ref<AudioStreamMP3> ResourceImporterMP3::import_mp3(const String &p_path) {
 	mp3_stream.instantiate();
 
 	mp3_stream->set_data(data);
-	ERR_FAIL_COND_V(!mp3_stream->get_data().size(), Ref<AudioStreamMP3>());
+	ERR_FAIL_COND_V(mp3_stream->get_data().is_empty(), Ref<AudioStreamMP3>());
 
 	return mp3_stream;
 }
 
-Error ResourceImporterMP3::import(const String &p_source_file, const String &p_save_path, const HashMap<StringName, Variant> &p_options, List<String> *r_platform_variants, List<String> *r_gen_files, Variant *r_metadata) {
+Error ResourceImporterMP3::import(ResourceUID::ID p_source_id, const String &p_source_file, const String &p_save_path, const HashMap<StringName, Variant> &p_options, List<String> *r_platform_variants, List<String> *r_gen_files, Variant *r_metadata) {
 	bool loop = p_options["loop"];
 	float loop_offset = p_options["loop_offset"];
 	double bpm = p_options["bpm"];

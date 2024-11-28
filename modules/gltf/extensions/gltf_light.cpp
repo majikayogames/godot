@@ -30,6 +30,7 @@
 
 #include "gltf_light.h"
 
+#include "../structures/gltf_object_model_property.h"
 #include "scene/3d/light_3d.h"
 
 void GLTFLight::_bind_methods() {
@@ -51,6 +52,8 @@ void GLTFLight::_bind_methods() {
 	ClassDB::bind_method(D_METHOD("set_inner_cone_angle", "inner_cone_angle"), &GLTFLight::set_inner_cone_angle);
 	ClassDB::bind_method(D_METHOD("get_outer_cone_angle"), &GLTFLight::get_outer_cone_angle);
 	ClassDB::bind_method(D_METHOD("set_outer_cone_angle", "outer_cone_angle"), &GLTFLight::set_outer_cone_angle);
+	ClassDB::bind_method(D_METHOD("get_additional_data", "extension_name"), &GLTFLight::get_additional_data);
+	ClassDB::bind_method(D_METHOD("set_additional_data", "extension_name", "additional_data"), &GLTFLight::set_additional_data);
 
 	ADD_PROPERTY(PropertyInfo(Variant::COLOR, "color"), "set_color", "get_color"); // Color
 	ADD_PROPERTY(PropertyInfo(Variant::FLOAT, "intensity"), "set_intensity", "get_intensity"); // float
@@ -58,6 +61,21 @@ void GLTFLight::_bind_methods() {
 	ADD_PROPERTY(PropertyInfo(Variant::FLOAT, "range"), "set_range", "get_range"); // float
 	ADD_PROPERTY(PropertyInfo(Variant::FLOAT, "inner_cone_angle"), "set_inner_cone_angle", "get_inner_cone_angle"); // float
 	ADD_PROPERTY(PropertyInfo(Variant::FLOAT, "outer_cone_angle"), "set_outer_cone_angle", "get_outer_cone_angle"); // float
+}
+
+void GLTFLight::set_cone_inner_attenuation_conversion_expressions(Ref<GLTFObjectModelProperty> &r_obj_model_prop) {
+	// Expression to convert glTF innerConeAngle to Godot spot_angle_attenuation.
+	Ref<Expression> gltf_to_godot_expr;
+	gltf_to_godot_expr.instantiate();
+	PackedStringArray gltf_to_godot_args = { "inner_cone_angle" };
+	gltf_to_godot_expr->parse("0.2 / (1.0 - inner_cone_angle / spot_angle) - 0.1", gltf_to_godot_args);
+	r_obj_model_prop->set_gltf_to_godot_expression(gltf_to_godot_expr);
+	// Expression to convert Godot spot_angle_attenuation to glTF innerConeAngle.
+	Ref<Expression> godot_to_gltf_expr;
+	godot_to_gltf_expr.instantiate();
+	PackedStringArray godot_to_gltf_args = { "godot_spot_angle_att" };
+	godot_to_gltf_expr->parse("spot_angle * maxf(0.0, 1.0 - (0.2 / (0.1 + godot_spot_angle_att)))", godot_to_gltf_args);
+	r_obj_model_prop->set_godot_to_gltf_expression(godot_to_gltf_expr);
 }
 
 Color GLTFLight::get_color() {
@@ -168,7 +186,7 @@ Light3D *GLTFLight::to_node() const {
 }
 
 Ref<GLTFLight> GLTFLight::from_dictionary(const Dictionary p_dictionary) {
-	ERR_FAIL_COND_V_MSG(!p_dictionary.has("type"), Ref<GLTFLight>(), "Failed to parse GLTF light, missing required field 'type'.");
+	ERR_FAIL_COND_V_MSG(!p_dictionary.has("type"), Ref<GLTFLight>(), "Failed to parse glTF light, missing required field 'type'.");
 	Ref<GLTFLight> light;
 	light.instantiate();
 	const String &type = p_dictionary["type"];
@@ -179,7 +197,7 @@ Ref<GLTFLight> GLTFLight::from_dictionary(const Dictionary p_dictionary) {
 		if (arr.size() == 3) {
 			light->color = Color(arr[0], arr[1], arr[2]).linear_to_srgb();
 		} else {
-			ERR_PRINT("Error parsing GLTF light: The color must have exactly 3 numbers.");
+			ERR_PRINT("Error parsing glTF light: The color must have exactly 3 numbers.");
 		}
 	}
 	if (p_dictionary.has("intensity")) {
@@ -193,10 +211,10 @@ Ref<GLTFLight> GLTFLight::from_dictionary(const Dictionary p_dictionary) {
 		light->inner_cone_angle = spot["innerConeAngle"];
 		light->outer_cone_angle = spot["outerConeAngle"];
 		if (light->inner_cone_angle >= light->outer_cone_angle) {
-			ERR_PRINT("Error parsing GLTF light: The inner angle must be smaller than the outer angle.");
+			ERR_PRINT("Error parsing glTF light: The inner angle must be smaller than the outer angle.");
 		}
 	} else if (type != "point" && type != "directional") {
-		ERR_PRINT("Error parsing GLTF light: Light type '" + type + "' is unknown.");
+		ERR_PRINT("Error parsing glTF light: Light type '" + type + "' is unknown.");
 	}
 	return light;
 }
@@ -219,4 +237,12 @@ Dictionary GLTFLight::to_dictionary() const {
 	d["intensity"] = intensity;
 	d["range"] = range;
 	return d;
+}
+
+Variant GLTFLight::get_additional_data(const StringName &p_extension_name) {
+	return additional_data[p_extension_name];
+}
+
+void GLTFLight::set_additional_data(const StringName &p_extension_name, Variant p_additional_data) {
+	additional_data[p_extension_name] = p_additional_data;
 }

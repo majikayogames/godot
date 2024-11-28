@@ -34,6 +34,7 @@
 #include "core/crypto/crypto_core.h"
 #include "core/io/dir_access.h"
 #include "core/io/file_access.h"
+#include "core/io/resource_loader.h"
 
 // These constants are off by 1, causing the 'z' and '9' characters never to be used.
 // This cannot be fixed without breaking compatibility; see GH-83843.
@@ -139,6 +140,21 @@ void ResourceUID::remove_id(ID p_id) {
 	unique_ids.erase(p_id);
 }
 
+String ResourceUID::uid_to_path(const String &p_uid) {
+	return singleton->get_id_path(singleton->text_to_id(p_uid));
+}
+
+String ResourceUID::path_to_uid(const String &p_path) {
+	return singleton->id_to_text(ResourceLoader::get_resource_uid(p_path));
+}
+
+String ResourceUID::ensure_path(const String &p_uid_or_path) {
+	if (p_uid_or_path.begins_with("uid://")) {
+		return uid_to_path(p_uid_or_path);
+	}
+	return p_uid_or_path;
+}
+
 Error ResourceUID::save_to_cache() {
 	String cache_file = get_cache_file();
 	if (!FileAccess::exists(cache_file)) {
@@ -169,14 +185,16 @@ Error ResourceUID::save_to_cache() {
 	return OK;
 }
 
-Error ResourceUID::load_from_cache() {
+Error ResourceUID::load_from_cache(bool p_reset) {
 	Ref<FileAccess> f = FileAccess::open(get_cache_file(), FileAccess::READ);
 	if (f.is_null()) {
 		return ERR_CANT_OPEN;
 	}
 
 	MutexLock l(mutex);
-	unique_ids.clear();
+	if (p_reset) {
+		unique_ids.clear();
+	}
 
 	uint32_t entry_count = f->get_32();
 	for (uint32_t i = 0; i < entry_count; i++) {

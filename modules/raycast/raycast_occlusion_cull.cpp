@@ -90,18 +90,11 @@ void RaycastOcclusionCull::RaycastHZBuffer::update_camera_rays(const Transform3D
 	td.camera_dir = -p_cam_transform.basis.get_column(2);
 	td.camera_orthogonal = p_cam_orthogonal;
 
-	Projection inv_camera_matrix = p_cam_projection.inverse();
-	Vector3 camera_corner_proj = Vector3(-1.0f, -1.0f, -1.0f);
-	Vector3 camera_corner_view = inv_camera_matrix.xform(camera_corner_proj);
-	td.pixel_corner = p_cam_transform.xform(camera_corner_view);
-
-	Vector3 top_corner_proj = Vector3(-1.0f, 1.0f, -1.0f);
-	Vector3 top_corner_view = inv_camera_matrix.xform(top_corner_proj);
-	Vector3 top_corner_world = p_cam_transform.xform(top_corner_view);
-
-	Vector3 left_corner_proj = Vector3(1.0f, -1.0f, -1.0f);
-	Vector3 left_corner_view = inv_camera_matrix.xform(left_corner_proj);
-	Vector3 left_corner_world = p_cam_transform.xform(left_corner_view);
+	// Calculate the world coordinates of the viewport.
+	Vector2 viewport_half = p_cam_projection.get_viewport_half_extents();
+	td.pixel_corner = p_cam_transform.xform(Vector3(-viewport_half.x, -viewport_half.y, -p_cam_projection.get_z_near()));
+	Vector3 top_corner_world = p_cam_transform.xform(Vector3(-viewport_half.x, viewport_half.y, -p_cam_projection.get_z_near()));
+	Vector3 left_corner_world = p_cam_transform.xform(Vector3(viewport_half.x, -viewport_half.y, -p_cam_projection.get_z_near()));
 
 	td.pixel_u_interp = left_corner_world - td.pixel_corner;
 	td.pixel_v_interp = top_corner_world - td.pixel_corner;
@@ -140,7 +133,7 @@ void RaycastOcclusionCull::RaycastHZBuffer::_generate_camera_rays(const CameraRa
 
 			Vector3 dir;
 			if (p_data->camera_orthogonal) {
-				dir = -p_data->camera_dir;
+				dir = p_data->camera_dir;
 				tile.ray.org_x[j] = pixel_pos.x - dir.x * p_data->z_near;
 				tile.ray.org_y[j] = pixel_pos.y - dir.y * p_data->z_near;
 				tile.ray.org_z[j] = pixel_pos.z - dir.z * p_data->z_near;
@@ -181,17 +174,7 @@ void RaycastOcclusionCull::RaycastHZBuffer::sort_rays(const Vector3 &p_camera_di
 					}
 					int k = tile_i * TILE_SIZE + tile_j;
 					int tile_index = i * tile_grid_size.x + j;
-					float d = camera_rays[tile_index].ray.tfar[k];
-
-					if (!p_orthogonal) {
-						const float &dir_x = camera_rays[tile_index].ray.dir_x[k];
-						const float &dir_y = camera_rays[tile_index].ray.dir_y[k];
-						const float &dir_z = camera_rays[tile_index].ray.dir_z[k];
-						float cos_theta = p_camera_dir.x * dir_x + p_camera_dir.y * dir_y + p_camera_dir.z * dir_z;
-						d *= cos_theta;
-					}
-
-					mips[0][y * buffer_size.x + x] = d;
+					mips[0][y * buffer_size.x + x] = camera_rays[tile_index].ray.tfar[k];
 				}
 			}
 		}
@@ -488,11 +471,13 @@ void RaycastOcclusionCull::Scenario::update() {
 }
 
 void RaycastOcclusionCull::Scenario::_raycast(uint32_t p_idx, const RaycastThreadData *p_raycast_data) const {
-	RTCIntersectContext ctx;
-	rtcInitIntersectContext(&ctx);
-	ctx.flags = RTC_INTERSECT_CONTEXT_FLAG_COHERENT;
-
-	rtcIntersect16((const int *)&p_raycast_data->masks[p_idx * TILE_RAYS], ebr_scene[current_scene_idx], &ctx, &p_raycast_data->rays[p_idx]);
+	RTCRayQueryContext context;
+	rtcInitRayQueryContext(&context);
+	RTCIntersectArguments args;
+	rtcInitIntersectArguments(&args);
+	args.flags = RTC_RAY_QUERY_FLAG_COHERENT;
+	args.context = &context;
+	rtcIntersect16((const int *)&p_raycast_data->masks[p_idx * TILE_RAYS], ebr_scene[current_scene_idx], &p_raycast_data->rays[p_idx], &args);
 }
 
 void RaycastOcclusionCull::Scenario::raycast(CameraRayTile *r_rays, const uint32_t *p_valid_masks, uint32_t p_tile_count) const {
@@ -536,6 +521,64 @@ void RaycastOcclusionCull::buffer_set_size(RID p_buffer, const Vector2i &p_size)
 	buffers[p_buffer].resize(p_size);
 }
 
+Projection RaycastOcclusionCull::_jitter_projection(const Projection &p_cam_projection, const Size2i &p_viewport_size) {
+	if (!_jitter_enabled) {
+		return p_cam_projection;
+	}
+
+	// Prevent divide by zero when using NULL viewport.
+	if ((p_viewport_size.x <= 0) || (p_viewport_size.y <= 0)) {
+		return p_cam_projection;
+	}
+
+	Projection p = p_cam_projection;
+
+	int32_t frame = Engine::get_singleton()->get_frames_drawn();
+	frame %= 9;
+
+	Vector2 jitter;
+
+	switch (frame) {
+		default:
+			break;
+		case 1: {
+			jitter = Vector2(-1, -1);
+		} break;
+		case 2: {
+			jitter = Vector2(1, -1);
+		} break;
+		case 3: {
+			jitter = Vector2(-1, 1);
+		} break;
+		case 4: {
+			jitter = Vector2(1, 1);
+		} break;
+		case 5: {
+			jitter = Vector2(-0.5f, -0.5f);
+		} break;
+		case 6: {
+			jitter = Vector2(0.5f, -0.5f);
+		} break;
+		case 7: {
+			jitter = Vector2(-0.5f, 0.5f);
+		} break;
+		case 8: {
+			jitter = Vector2(0.5f, 0.5f);
+		} break;
+	}
+
+	// The multiplier here determines the divergence from center,
+	// and is to some extent a balancing act.
+	// Higher divergence gives fewer false hidden, but more false shown.
+	// False hidden is obvious to viewer, false shown is not.
+	// False shown can lower percentage that are occluded, and therefore performance.
+	jitter *= Vector2(1 / (float)p_viewport_size.x, 1 / (float)p_viewport_size.y) * 0.05f;
+
+	p.add_jitter_offset(jitter);
+
+	return p;
+}
+
 void RaycastOcclusionCull::buffer_update(RID p_buffer, const Transform3D &p_cam_transform, const Projection &p_cam_projection, bool p_cam_orthogonal) {
 	if (!buffers.has(p_buffer)) {
 		return;
@@ -550,7 +593,9 @@ void RaycastOcclusionCull::buffer_update(RID p_buffer, const Transform3D &p_cam_
 	Scenario &scenario = scenarios[buffer.scenario_rid];
 	scenario.update();
 
-	buffer.update_camera_rays(p_cam_transform, p_cam_projection, p_cam_orthogonal);
+	Projection jittered_proj = _jitter_projection(p_cam_projection, buffer.get_occlusion_buffer_size());
+
+	buffer.update_camera_rays(p_cam_transform, jittered_proj, p_cam_orthogonal);
 
 	scenario.raycast(buffer.camera_rays, buffer.camera_ray_masks.ptr(), buffer.camera_rays_tile_count);
 	buffer.sort_rays(-p_cam_transform.basis.get_column(2), p_cam_orthogonal);
@@ -596,6 +641,7 @@ void RaycastOcclusionCull::_init_embree() {
 RaycastOcclusionCull::RaycastOcclusionCull() {
 	raycast_singleton = this;
 	int default_quality = GLOBAL_GET("rendering/occlusion_culling/bvh_build_quality");
+	_jitter_enabled = GLOBAL_GET("rendering/occlusion_culling/jitter_projection");
 	build_quality = RS::ViewportOcclusionCullingBuildQuality(default_quality);
 }
 

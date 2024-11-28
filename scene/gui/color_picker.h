@@ -31,28 +31,24 @@
 #ifndef COLOR_PICKER_H
 #define COLOR_PICKER_H
 
-#include "scene/gui/aspect_ratio_container.h"
 #include "scene/gui/box_container.h"
 #include "scene/gui/button.h"
-#include "scene/gui/control.h"
-#include "scene/gui/grid_container.h"
-#include "scene/gui/label.h"
-#include "scene/gui/line_edit.h"
-#include "scene/gui/menu_button.h"
-#include "scene/gui/option_button.h"
-#include "scene/gui/panel.h"
 #include "scene/gui/popup.h"
-#include "scene/gui/separator.h"
-#include "scene/gui/slider.h"
-#include "scene/gui/spin_box.h"
-#include "scene/gui/texture_rect.h"
-#include "scene/resources/style_box_flat.h"
 
+class AspectRatioContainer;
 class ColorMode;
-class ColorModeRGB;
-class ColorModeHSV;
-class ColorModeRAW;
-class ColorModeOKHSL;
+class ColorPickerShape;
+class GridContainer;
+class HSlider;
+class Label;
+class LineEdit;
+class MarginContainer;
+class MenuButton;
+class OptionButton;
+class PopupMenu;
+class SpinBox;
+class StyleBoxFlat;
+class TextureRect;
 
 class ColorPresetButton : public BaseButton {
 	GDCLASS(ColorPresetButton, BaseButton);
@@ -110,11 +106,11 @@ public:
 	static const int SLIDER_COUNT = 4;
 
 private:
-	static Ref<Shader> wheel_shader;
-	static Ref<Shader> circle_shader;
-	static Ref<Shader> circle_ok_color_shader;
-	static List<Color> preset_cache;
-	static List<Color> recent_preset_cache;
+	static inline Ref<Shader> wheel_shader;
+	static inline Ref<Shader> circle_shader;
+	static inline Ref<Shader> circle_ok_color_shader;
+	static inline List<Color> preset_cache;
+	static inline List<Color> recent_preset_cache;
 
 #ifdef TOOLS_ENABLED
 	Object *editor_settings = nullptr;
@@ -130,7 +126,6 @@ private:
 	Popup *picker_window = nullptr;
 	// Legacy color picking.
 	TextureRect *picker_texture_rect = nullptr;
-	Panel *picker_preview = nullptr;
 	Label *picker_preview_label = nullptr;
 	Ref<StyleBoxFlat> picker_preview_style_box;
 	Color picker_color;
@@ -212,6 +207,11 @@ private:
 	float h = 0.0;
 	float s = 0.0;
 	float v = 0.0;
+
+	float ok_hsl_h = 0.0;
+	float ok_hsl_s = 0.0;
+	float ok_hsl_l = 0.0;
+
 	Color last_color;
 
 	struct ThemeCache {
@@ -237,6 +237,7 @@ private:
 
 		Ref<Texture2D> bar_arrow;
 		Ref<Texture2D> sample_bg;
+		Ref<Texture2D> sample_revert;
 		Ref<Texture2D> overbright_indicator;
 		Ref<Texture2D> picker_cursor;
 		Ref<Texture2D> color_hue;
@@ -316,12 +317,11 @@ public:
 	void set_edit_alpha(bool p_show);
 	bool is_editing_alpha() const;
 
-	int get_preset_size();
-
 	void _set_pick_color(const Color &p_color, bool p_update_sliders);
 	void set_pick_color(const Color &p_color);
 	Color get_pick_color() const;
 	void set_old_color(const Color &p_color);
+	Color get_old_color() const;
 
 	void set_display_old_color(bool p_enabled);
 	bool is_displaying_old_color() const;
@@ -372,6 +372,10 @@ public:
 
 	ColorPicker();
 	~ColorPicker();
+};
+
+class ColorPickerPopupPanel : public PopupPanel {
+	virtual void _input_from_window(const Ref<InputEvent> &p_event) override;
 };
 
 class ColorPickerButton : public Button {

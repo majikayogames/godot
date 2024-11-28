@@ -45,7 +45,7 @@ void PacketPeerUDP::set_broadcast_enabled(bool p_enabled) {
 	}
 }
 
-Error PacketPeerUDP::join_multicast_group(IPAddress p_multi_address, String p_if_name) {
+Error PacketPeerUDP::join_multicast_group(IPAddress p_multi_address, const String &p_if_name) {
 	ERR_FAIL_COND_V(udp_server, ERR_LOCKED);
 	ERR_FAIL_COND_V(!_sock.is_valid(), ERR_UNAVAILABLE);
 	ERR_FAIL_COND_V(!p_multi_address.is_valid(), ERR_INVALID_PARAMETER);
@@ -60,7 +60,7 @@ Error PacketPeerUDP::join_multicast_group(IPAddress p_multi_address, String p_if
 	return _sock->join_multicast_group(p_multi_address, p_if_name);
 }
 
-Error PacketPeerUDP::leave_multicast_group(IPAddress p_multi_address, String p_if_name) {
+Error PacketPeerUDP::leave_multicast_group(IPAddress p_multi_address, const String &p_if_name) {
 	ERR_FAIL_COND_V(udp_server, ERR_LOCKED);
 	ERR_FAIL_COND_V(!_sock.is_valid(), ERR_UNAVAILABLE);
 	ERR_FAIL_COND_V(!_sock->is_open(), ERR_UNCONFIGURED);
@@ -105,8 +105,21 @@ Error PacketPeerUDP::get_packet(const uint8_t **r_buffer, int &r_buffer_size) {
 		return ERR_UNAVAILABLE;
 	}
 
+/* Bogus GCC warning here:
+ * In member function 'int RingBuffer<T>::read(T*, int, bool) [with T = unsigned char]',
+ *     inlined from 'virtual Error PacketPeerUDP::get_packet(const uint8_t**, int&)' at core/io/packet_peer_udp.cpp:112:9,
+ *     inlined from 'virtual Error PacketPeerUDP::get_packet(const uint8_t**, int&)' at core/io/packet_peer_udp.cpp:99:7:
+ * Error: ./core/ring_buffer.h:68:46: error: writing 1 byte into a region of size 0 [-Werror=stringop-overflow=]
+ *   68 |                                 p_buf[dst++] = read[pos + i];
+ *      |                                 ~~~~~~~~~~~~~^~~~~~~
+ */
+#if defined(__GNUC__) && !defined(__clang__)
+#pragma GCC diagnostic push
+#pragma GCC diagnostic warning "-Wstringop-overflow=0"
+#endif
+
 	uint32_t size = 0;
-	uint8_t ipv6[16];
+	uint8_t ipv6[16] = {};
 	rb.read(ipv6, 16, true);
 	packet_ip.set_ipv6(ipv6);
 	rb.read((uint8_t *)&packet_port, 4, true);
@@ -115,6 +128,11 @@ Error PacketPeerUDP::get_packet(const uint8_t **r_buffer, int &r_buffer_size) {
 	--queue_count;
 	*r_buffer = packet_buffer;
 	r_buffer_size = size;
+
+#if defined(__GNUC__) && !defined(__clang__)
+#pragma GCC diagnostic pop
+#endif
+
 	return OK;
 }
 

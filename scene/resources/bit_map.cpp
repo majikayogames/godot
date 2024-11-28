@@ -39,7 +39,7 @@ void BitMap::create(const Size2i &p_size) {
 
 	ERR_FAIL_COND(static_cast<int64_t>(p_size.width) * static_cast<int64_t>(p_size.height) > INT32_MAX);
 
-	Error err = bitmask.resize((((p_size.width * p_size.height) - 1) / 8) + 1);
+	Error err = bitmask.resize(Math::division_round_up(p_size.width * p_size.height, 8));
 	ERR_FAIL_COND(err != OK);
 
 	width = p_size.width;
@@ -559,6 +559,7 @@ void BitMap::grow_mask(int p_pixels, const Rect2i &p_rect) {
 
 	bool bit_value = p_pixels > 0;
 	p_pixels = Math::abs(p_pixels);
+	const int pixels2 = p_pixels * p_pixels;
 
 	Rect2i r = Rect2i(0, 0, width, height).intersection(p_rect);
 
@@ -588,8 +589,8 @@ void BitMap::grow_mask(int p_pixels, const Rect2i &p_rect) {
 						}
 					}
 
-					float d = Point2(j, i).distance_to(Point2(x, y)) - CMP_EPSILON;
-					if (d > p_pixels) {
+					float d = Point2(j, i).distance_squared_to(Point2(x, y)) - CMP_EPSILON2;
+					if (d > pixels2) {
 						continue;
 					}
 

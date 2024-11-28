@@ -5,7 +5,7 @@
 	</brief_description>
 	<description>
 		Tweens are mostly useful for animations requiring a numerical property to be interpolated over a range of values. The name [i]tween[/i] comes from [i]in-betweening[/i], an animation technique where you specify [i]keyframes[/i] and the computer interpolates the frames that appear between them. Animating something with a [Tween] is called tweening.
-		[Tween] is more suited than [AnimationPlayer] for animations where you don't know the final values in advance. For example, interpolating a dynamically-chosen camera zoom value is best done with a [Tween]; it would be difficult to do the same thing with an [AnimationPlayer] node. Tweens are also more light-weight than [AnimationPlayer], so they are very much suited for simple animations or general tasks that don't require visual tweaking provided by the editor. They can be used in a fire-and-forget manner for some logic that normally would be done by code. You can e.g. make something shoot periodically by using a looped [CallbackTweener] with a delay.
+		[Tween] is more suited than [AnimationPlayer] for animations where you don't know the final values in advance. For example, interpolating a dynamically-chosen camera zoom value is best done with a [Tween]; it would be difficult to do the same thing with an [AnimationPlayer] node. Tweens are also more light-weight than [AnimationPlayer], so they are very much suited for simple animations or general tasks that don't require visual tweaking provided by the editor. They can be used in a "fire-and-forget" manner for some logic that normally would be done by code. You can e.g. make something shoot periodically by using a looped [CallbackTweener] with a delay.
 		A [Tween] can be created by using either [method SceneTree.create_tween] or [method Node.create_tween]. [Tween]s created manually (i.e. by using [code]Tween.new()[/code]) are invalid and can't be used for tweening values.
 		A tween animation is created by adding [Tweener]s to the [Tween] object, using [method tween_property], [method tween_interval], [method tween_callback] or [method tween_method]:
 		[codeblocks]
@@ -183,7 +183,6 @@
 			<return type="Tween" />
 			<description>
 				Makes the next [Tweener] run parallelly to the previous one.
-				[b]Example:[/b]
 				[codeblocks]
 				[gdscript]
 				var tween = create_tween()
@@ -219,8 +218,14 @@
 			<return type="Tween" />
 			<param index="0" name="ease" type="int" enum="Tween.EaseType" />
 			<description>
-				Sets the default ease type for [PropertyTweener]s and [MethodTweener]s animated by this [Tween].
-				If not specified, the default value is [constant EASE_IN_OUT].
+				Sets the default ease type for [PropertyTweener]s and [MethodTweener]s appended after this method.
+				Before this method is called, the default ease type is [constant EASE_IN_OUT].
+				[codeblock]
+				var tween = create_tween()
+				tween.tween_property(self, "position", Vector2(300, 0), 0.5) # Uses EASE_IN_OUT.
+				tween.set_ease(Tween.EASE_IN)
+				tween.tween_property(self, "rotation_degrees", 45.0, 0.5) # Uses EASE_IN.
+				[/codeblock]
 			</description>
 		</method>
 		<method name="set_loops">
@@ -237,6 +242,12 @@
 			<param index="0" name="parallel" type="bool" default="true" />
 			<description>
 				If [param parallel] is [code]true[/code], the [Tweener]s appended after this method will by default run simultaneously, as opposed to sequentially.
+				[b]Note:[/b] Just like with [method parallel], the tweener added right before this method will also be part of the parallel step.
+				[codeblock]
+				tween.tween_property(self, "position", Vector2(300, 0), 0.5)
+				tween.set_parallel()
+				tween.tween_property(self, "modulate", Color.GREEN, 0.5) # Runs together with the position tweener.
+				[/codeblock]
 			</description>
 		</method>
 		<method name="set_pause_mode">
@@ -266,14 +277,36 @@
 			<return type="Tween" />
 			<param index="0" name="trans" type="int" enum="Tween.TransitionType" />
 			<description>
-				Sets the default transition type for [PropertyTweener]s and [MethodTweener]s animated by this [Tween].
-				If not specified, the default value is [constant TRANS_LINEAR].
+				Sets the default transition type for [PropertyTweener]s and [MethodTweener]s appended after this method.
+				Before this method is called, the default transition type is [constant TRANS_LINEAR].
+				[codeblock]
+				var tween = create_tween()
+				tween.tween_property(self, "position", Vector2(300, 0), 0.5) # Uses TRANS_LINEAR.
+				tween.set_trans(Tween.TRANS_SINE)
+				tween.tween_property(self, "rotation_degrees", 45.0, 0.5) # Uses TRANS_SINE.
+				[/codeblock]
 			</description>
 		</method>
 		<method name="stop">
 			<return type="void" />
 			<description>
 				Stops the tweening and resets the [Tween] to its initial state. This will not remove any appended [Tweener]s.
+				[b]Note:[/b] This does [i]not[/i] reset targets of [PropertyTweener]s to their values when the [Tween] first started.
+				[codeblock]
+				var tween = create_tween()
+
+				# Will move from 0 to 500 over 1 second.
+				position.x = 0.0
+				tween.tween_property(self, "position:x", 500, 1.0)
+
+				# Will be at (about) 250 when the timer finishes.
+				await get_tree().create_timer(0.5).timeout
+
+				# Will now move from (about) 250 to 500 over 1 second,
+				# thus at half the speed as before.
+				tween.stop()
+				tween.play()
+				[/codeblock]
 				[b]Note:[/b] If a Tween is stopped and not bound to any node, it will exist indefinitely until manually started or invalidated. If you lose a reference to such Tween, you can retrieve it using [method SceneTree.get_processed_tweens].
 			</description>
 		</method>
@@ -404,7 +437,6 @@
 			<param index="3" name="duration" type="float" />
 			<description>
 				Creates and appends a [PropertyTweener]. This method tweens a [param property] of an [param object] between an initial value and [param final_val] in a span of time equal to [param duration], in seconds. The initial value by default is the property's value at the time the tweening of the [PropertyTweener] starts.
-				[b]Example:[/b]
 				[codeblocks]
 				[gdscript]
 				var tween = create_tween()

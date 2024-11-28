@@ -40,7 +40,7 @@
 
 using namespace godot;
 
-#else
+#elif defined(GODOT_MODULE)
 // Headers for building as built-in module.
 
 #include "core/os/mutex.h"
@@ -60,8 +60,6 @@ using namespace godot;
 
 struct GL_State {
 	bool ready = false;
-	float bmp_x = 0;
-	float bmp_y = 0;
 	float x = 0;
 	float y = 0;
 	float w = 0;

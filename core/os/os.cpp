@@ -247,7 +247,10 @@ String OS::get_safe_dir_name(const String &p_dir_name, bool p_allow_paths) const
 	for (int i = 0; i < invalid_chars.size(); i++) {
 		safe_dir_name = safe_dir_name.replace(invalid_chars[i], "-");
 	}
-	return safe_dir_name;
+
+	// Trim trailing periods from the returned value as it's not valid for folder names on Windows.
+	// This check is still applied on non-Windows platforms so the returned value is consistent across platforms.
+	return safe_dir_name.rstrip(".");
 }
 
 // Path to data, config, cache, etc. OS-specific folders
@@ -298,7 +301,7 @@ String OS::get_system_dir(SystemDir p_dir, bool p_shared_storage) const {
 	return ".";
 }
 
-Error OS::shell_open(String p_uri) {
+Error OS::shell_open(const String &p_uri) {
 	return ERR_UNAVAILABLE;
 }
 
@@ -349,7 +352,7 @@ void OS::ensure_user_data_dir() {
 
 	Ref<DirAccess> da = DirAccess::create(DirAccess::ACCESS_FILESYSTEM);
 	Error err = da->make_dir_recursive(dd);
-	ERR_FAIL_COND_MSG(err != OK, "Error attempting to create data dir: " + dd + ".");
+	ERR_FAIL_COND_MSG(err != OK, vformat("Error attempting to create data dir: %s.", dd));
 }
 
 String OS::get_model_name() const {
@@ -398,6 +401,11 @@ bool OS::has_feature(const String &p_feature) {
 	if (p_feature == "editor") {
 		return true;
 	}
+	if (p_feature == "editor_hint") {
+		return _in_editor;
+	} else if (p_feature == "editor_runtime") {
+		return !_in_editor;
+	}
 #else
 	if (p_feature == "template") {
 		return true;
@@ -431,6 +439,11 @@ bool OS::has_feature(const String &p_feature) {
 	}
 #if defined(__x86_64) || defined(__x86_64__) || defined(__amd64__) || defined(__i386) || defined(__i386__) || defined(_M_IX86) || defined(_M_X64)
 #if defined(__x86_64) || defined(__x86_64__) || defined(__amd64__) || defined(_M_X64)
+#if defined(MACOS_ENABLED)
+	if (p_feature == "universal") {
+		return true;
+	}
+#endif
 	if (p_feature == "x86_64") {
 		return true;
 	}
@@ -444,6 +457,11 @@ bool OS::has_feature(const String &p_feature) {
 	}
 #elif defined(__arm__) || defined(__aarch64__) || defined(_M_ARM) || defined(_M_ARM64)
 #if defined(__aarch64__) || defined(_M_ARM64)
+#if defined(MACOS_ENABLED)
+	if (p_feature == "universal") {
+		return true;
+	}
+#endif
 	if (p_feature == "arm64") {
 		return true;
 	}
@@ -504,13 +522,28 @@ bool OS::has_feature(const String &p_feature) {
 	}
 #endif
 
+#ifdef THREADS_ENABLED
+	if (p_feature == "threads") {
+		return true;
+	}
+#else
+	if (p_feature == "nothreads") {
+		return true;
+	}
+#endif
+
 	if (_check_internal_feature_support(p_feature)) {
 		return true;
 	}
 
-	if (has_server_feature_callback && has_server_feature_callback(p_feature)) {
-		return true;
+	if (has_server_feature_callback) {
+		return has_server_feature_callback(p_feature);
 	}
+#ifdef DEBUG_ENABLED
+	else if (is_stdout_verbose()) {
+		WARN_PRINT_ONCE("Server features cannot be checked before RenderingServer has been created. If you are checking a server feature, consider moving your OS::has_feature call after INITIALIZATION_LEVEL_SERVERS.");
+	}
+#endif
 
 	if (ProjectSettings::get_singleton()->has_custom_feature(p_feature)) {
 		return true;
@@ -626,17 +659,22 @@ String OS::get_benchmark_file() {
 	return benchmark_file;
 }
 
-void OS::benchmark_begin_measure(const String &p_what) {
+void OS::benchmark_begin_measure(const String &p_context, const String &p_what) {
 #ifdef TOOLS_ENABLED
-	start_benchmark_from[p_what] = OS::get_singleton()->get_ticks_usec();
+	Pair<String, String> mark_key(p_context, p_what);
+	ERR_FAIL_COND_MSG(benchmark_marks_from.has(mark_key), vformat("Benchmark key '%s:%s' already exists.", p_context, p_what));
+
+	benchmark_marks_from[mark_key] = OS::get_singleton()->get_ticks_usec();
 #endif
 }
-void OS::benchmark_end_measure(const String &p_what) {
+void OS::benchmark_end_measure(const String &p_context, const String &p_what) {
 #ifdef TOOLS_ENABLED
-	uint64_t total = OS::get_singleton()->get_ticks_usec() - start_benchmark_from[p_what];
-	double total_f = double(total) / double(1000000);
+	Pair<String, String> mark_key(p_context, p_what);
+	ERR_FAIL_COND_MSG(!benchmark_marks_from.has(mark_key), vformat("Benchmark key '%s:%s' doesn't exist.", p_context, p_what));
 
-	startup_benchmark_json[p_what] = total_f;
+	uint64_t total = OS::get_singleton()->get_ticks_usec() - benchmark_marks_from[mark_key];
+	double total_f = double(total) / double(1000000);
+	benchmark_marks_final[mark_key] = total_f;
 #endif
 }
 
@@ -645,19 +683,33 @@ void OS::benchmark_dump() {
 	if (!use_benchmark) {
 		return;
 	}
+
 	if (!benchmark_file.is_empty()) {
 		Ref<FileAccess> f = FileAccess::open(benchmark_file, FileAccess::WRITE);
 		if (f.is_valid()) {
+			Dictionary benchmark_marks;
+			for (const KeyValue<Pair<String, String>, double> &E : benchmark_marks_final) {
+				const String mark_key = vformat("[%s] %s", E.key.first, E.key.second);
+				benchmark_marks[mark_key] = E.value;
+			}
+
 			Ref<JSON> json;
 			json.instantiate();
-			f->store_string(json->stringify(startup_benchmark_json, "\t", false, true));
+			f->store_string(json->stringify(benchmark_marks, "\t", false, true));
 		}
 	} else {
-		List<Variant> keys;
-		startup_benchmark_json.get_key_list(&keys);
+		HashMap<String, String> results;
+		for (const KeyValue<Pair<String, String>, double> &E : benchmark_marks_final) {
+			if (E.key.first == "Startup" && !results.has(E.key.first)) {
+				results.insert(E.key.first, "", true); // Hack to make sure "Startup" always comes first.
+			}
+
+			results[E.key.first] += vformat("\t\t- %s: %.3f msec.\n", E.key.second, (E.value * 1000));
+		}
+
 		print_line("BENCHMARK:");
-		for (const Variant &K : keys) {
-			print_line("\t-", K, ": ", startup_benchmark_json[K], +" sec.");
+		for (const KeyValue<String, String> &E : results) {
+			print_line(vformat("\t[%s]\n%s", E.key, E.value));
 		}
 	}
 #endif

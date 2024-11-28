@@ -45,7 +45,7 @@
 
 class EGLManager {
 private:
-	// An EGL-side rappresentation of a display with its own rendering
+	// An EGL-side representation of a display with its own rendering
 	// context.
 	struct GLDisplay {
 		void *display = nullptr;
@@ -53,11 +53,18 @@ private:
 		EGLDisplay egl_display = EGL_NO_DISPLAY;
 		EGLContext egl_context = EGL_NO_CONTEXT;
 		EGLConfig egl_config = nullptr;
+
+#ifdef WINDOWS_ENABLED
+		bool has_EGL_ANGLE_surface_orientation = false;
+#endif
 	};
 
 	// EGL specific window data.
 	struct GLWindow {
 		bool initialized = false;
+#ifdef WINDOWS_ENABLED
+		bool flipped_y = false;
+#endif
 
 		// An handle to the GLDisplay associated with this window.
 		int gldisplay_id = -1;
@@ -98,7 +105,6 @@ public:
 	void window_destroy(DisplayServer::WindowID p_window_id);
 
 	void release_current();
-	void make_current();
 	void swap_buffers();
 
 	void window_make_current(DisplayServer::WindowID p_window_id);
@@ -107,8 +113,10 @@ public:
 	bool is_using_vsync() const;
 
 	EGLContext get_context(DisplayServer::WindowID p_window_id);
+	EGLDisplay get_display(DisplayServer::WindowID p_window_id);
+	EGLConfig get_config(DisplayServer::WindowID p_window_id);
 
-	Error initialize();
+	Error initialize(void *p_native_display = nullptr);
 
 	EGLManager();
 	virtual ~EGLManager();
