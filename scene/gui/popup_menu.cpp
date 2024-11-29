@@ -474,7 +474,7 @@ void PopupMenu::_input_from_window_internal(const Ref<InputEvent> &p_event) {
 			for (int i = search_from; i < items.size(); i++) {
 				if (!items[i].separator && !items[i].disabled) {
 					mouse_over = i;
-					emit_signal(SNAME("id_focused"), i);
+					emit_signal(SNAME("id_focused"), items[i].id);
 					scroll_to_item(i);
 					control->queue_redraw();
 					set_input_as_handled();
@@ -488,7 +488,7 @@ void PopupMenu::_input_from_window_internal(const Ref<InputEvent> &p_event) {
 				for (int i = 0; i < search_from; i++) {
 					if (!items[i].separator && !items[i].disabled) {
 						mouse_over = i;
-						emit_signal(SNAME("id_focused"), i);
+						emit_signal(SNAME("id_focused"), items[i].id);
 						scroll_to_item(i);
 						control->queue_redraw();
 						set_input_as_handled();
@@ -512,7 +512,7 @@ void PopupMenu::_input_from_window_internal(const Ref<InputEvent> &p_event) {
 			for (int i = search_from; i >= 0; i--) {
 				if (!items[i].separator && !items[i].disabled) {
 					mouse_over = i;
-					emit_signal(SNAME("id_focused"), i);
+					emit_signal(SNAME("id_focused"), items[i].id);
 					scroll_to_item(i);
 					control->queue_redraw();
 					set_input_as_handled();
@@ -526,7 +526,7 @@ void PopupMenu::_input_from_window_internal(const Ref<InputEvent> &p_event) {
 				for (int i = items.size() - 1; i >= search_from; i--) {
 					if (!items[i].separator && !items[i].disabled) {
 						mouse_over = i;
-						emit_signal(SNAME("id_focused"), i);
+						emit_signal(SNAME("id_focused"), items[i].id);
 						scroll_to_item(i);
 						control->queue_redraw();
 						set_input_as_handled();
@@ -692,7 +692,7 @@ void PopupMenu::_input_from_window_internal(const Ref<InputEvent> &p_event) {
 
 			if (items[i].text.findn(search_string) == 0) {
 				mouse_over = i;
-				emit_signal(SNAME("id_focused"), i);
+				emit_signal(SNAME("id_focused"), items[i].id);
 				scroll_to_item(i);
 				control->queue_redraw();
 				set_input_as_handled();
@@ -1091,7 +1091,7 @@ void PopupMenu::_notification(int p_what) {
 					for (int i = search_from; i < items.size(); i++) {
 						if (!items[i].separator && !items[i].disabled) {
 							mouse_over = i;
-							emit_signal(SNAME("id_focused"), i);
+							emit_signal(SNAME("id_focused"), items[i].id);
 							scroll_to_item(i);
 							control->queue_redraw();
 							match_found = true;
@@ -1104,7 +1104,7 @@ void PopupMenu::_notification(int p_what) {
 						for (int i = 0; i < search_from; i++) {
 							if (!items[i].separator && !items[i].disabled) {
 								mouse_over = i;
-								emit_signal(SNAME("id_focused"), i);
+								emit_signal(SNAME("id_focused"), items[i].id);
 								scroll_to_item(i);
 								control->queue_redraw();
 								break;
@@ -1124,7 +1124,7 @@ void PopupMenu::_notification(int p_what) {
 					for (int i = search_from; i >= 0; i--) {
 						if (!items[i].separator && !items[i].disabled) {
 							mouse_over = i;
-							emit_signal(SNAME("id_focused"), i);
+							emit_signal(SNAME("id_focused"), items[i].id);
 							scroll_to_item(i);
 							control->queue_redraw();
 							match_found = true;
@@ -1137,7 +1137,7 @@ void PopupMenu::_notification(int p_what) {
 						for (int i = items.size() - 1; i >= search_from; i--) {
 							if (!items[i].separator && !items[i].disabled) {
 								mouse_over = i;
-								emit_signal(SNAME("id_focused"), i);
+								emit_signal(SNAME("id_focused"), items[i].id);
 								scroll_to_item(i);
 								control->queue_redraw();
 								break;
@@ -2592,14 +2592,6 @@ void PopupMenu::clear_autohide_areas() {
 	autohide_areas.clear();
 }
 
-void PopupMenu::take_mouse_focus() {
-	ERR_FAIL_COND(!is_inside_tree());
-
-	if (get_parent()) {
-		get_parent()->get_viewport()->pass_mouse_focus_to(this, control);
-	}
-}
-
 bool PopupMenu::_set(const StringName &p_name, const Variant &p_value) {
 	if (property_helper.property_set_value(p_name, p_value)) {
 		return true;
@@ -2823,7 +2815,7 @@ void PopupMenu::_bind_methods() {
 	base_property_helper.register_property(PropertyInfo(Variant::OBJECT, "icon", PROPERTY_HINT_RESOURCE_TYPE, "Texture2D"), defaults.icon, &PopupMenu::set_item_icon, &PopupMenu::get_item_icon);
 	base_property_helper.register_property(PropertyInfo(Variant::INT, "checkable", PROPERTY_HINT_ENUM, "No,As checkbox,As radio button"), defaults.checkable_type, &PopupMenu::_set_item_checkable_type, &PopupMenu::_get_item_checkable_type);
 	base_property_helper.register_property(PropertyInfo(Variant::BOOL, "checked"), defaults.checked, &PopupMenu::set_item_checked, &PopupMenu::is_item_checked);
-	base_property_helper.register_property(PropertyInfo(Variant::INT, "id", PROPERTY_HINT_RANGE, "0,10,1,or_greater"), defaults.id, &PopupMenu::set_item_id, &PopupMenu::get_item_id);
+	base_property_helper.register_property(PropertyInfo(Variant::INT, "id", PROPERTY_HINT_RANGE, "0,10,1,or_greater", PROPERTY_USAGE_DEFAULT | PROPERTY_USAGE_STORE_IF_NULL), defaults.id, &PopupMenu::set_item_id, &PopupMenu::get_item_id);
 	base_property_helper.register_property(PropertyInfo(Variant::BOOL, "disabled"), defaults.disabled, &PopupMenu::set_item_disabled, &PopupMenu::is_item_disabled);
 	base_property_helper.register_property(PropertyInfo(Variant::BOOL, "separator"), defaults.separator, &PopupMenu::set_item_as_separator, &PopupMenu::is_item_separator);
 	PropertyListHelper::register_base_helper(&base_property_helper);

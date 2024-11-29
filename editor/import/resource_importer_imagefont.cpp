@@ -75,7 +75,7 @@ void ResourceImporterImageFont::get_import_options(const String &p_path, List<Im
 	r_options->push_back(ImportOption(PropertyInfo(Variant::INT, "scaling_mode", PROPERTY_HINT_ENUM, "Disabled,Enabled (Integer),Enabled (Fractional)"), TextServer::FIXED_SIZE_SCALE_ENABLED));
 }
 
-Error ResourceImporterImageFont::import(const String &p_source_file, const String &p_save_path, const HashMap<StringName, Variant> &p_options, List<String> *r_platform_variants, List<String> *r_gen_files, Variant *r_metadata) {
+Error ResourceImporterImageFont::import(ResourceUID::ID p_source_id, const String &p_source_file, const String &p_save_path, const HashMap<StringName, Variant> &p_options, List<String> *r_platform_variants, List<String> *r_gen_files, Variant *r_metadata) {
 	print_verbose("Importing image font from: " + p_source_file);
 
 	int columns = p_options["columns"];
@@ -199,7 +199,7 @@ Error ResourceImporterImageFont::import(const String &p_source_file, const Strin
 					case STEP_OFF_Y_BEGIN: {
 						// Read advance and offset.
 						if (range[c] == ' ') {
-							int next = range.find(" ", c + 1);
+							int next = range.find_char(' ', c + 1);
 							if (next < c) {
 								next = range.length();
 							}
@@ -293,18 +293,20 @@ Error ResourceImporterImageFont::import(const String &p_source_file, const Strin
 		}
 		String from_tokens;
 		for (int i = 0; i < kp_tokens[0].length(); i++) {
-			if (i <= kp_tokens[0].length() - 6 && kp_tokens[0][i] == '\\' && kp_tokens[0][i + 1] == 'u') {
+			if (i <= kp_tokens[0].length() - 6 && kp_tokens[0][i] == '\\' && kp_tokens[0][i + 1] == 'u' && is_hex_digit(kp_tokens[0][i + 2]) && is_hex_digit(kp_tokens[0][i + 3]) && is_hex_digit(kp_tokens[0][i + 4]) && is_hex_digit(kp_tokens[0][i + 5])) {
 				char32_t charcode = kp_tokens[0].substr(i + 2, 4).hex_to_int();
 				from_tokens += charcode;
+				i += 5;
 			} else {
 				from_tokens += kp_tokens[0][i];
 			}
 		}
 		String to_tokens;
 		for (int i = 0; i < kp_tokens[1].length(); i++) {
-			if (i <= kp_tokens[1].length() - 6 && kp_tokens[1][i] == '\\' && kp_tokens[1][i + 1] == 'u') {
+			if (i <= kp_tokens[1].length() - 6 && kp_tokens[1][i] == '\\' && kp_tokens[1][i + 1] == 'u' && is_hex_digit(kp_tokens[1][i + 2]) && is_hex_digit(kp_tokens[1][i + 3]) && is_hex_digit(kp_tokens[1][i + 4]) && is_hex_digit(kp_tokens[1][i + 5])) {
 				char32_t charcode = kp_tokens[1].substr(i + 2, 4).hex_to_int();
 				to_tokens += charcode;
+				i += 5;
 			} else {
 				to_tokens += kp_tokens[1][i];
 			}

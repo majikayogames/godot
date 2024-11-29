@@ -31,6 +31,7 @@
 #include "shader_create_dialog.h"
 
 #include "core/config/project_settings.h"
+#include "editor/editor_node.h"
 #include "editor/gui/editor_file_dialog.h"
 #include "editor/gui/editor_validation_panel.h"
 #include "editor/themes/editor_scale.h"
@@ -74,7 +75,7 @@ void ShaderCreateDialog::_notification(int p_what) {
 				}
 			}
 
-			path_button->set_icon(get_editor_theme_icon(SNAME("Folder")));
+			path_button->set_button_icon(get_editor_theme_icon(SNAME("Folder")));
 		} break;
 	}
 }
@@ -102,7 +103,7 @@ void ShaderCreateDialog::_update_language_info() {
 
 void ShaderCreateDialog::_path_hbox_sorted() {
 	if (is_visible()) {
-		int filename_start_pos = initial_base_path.rfind("/") + 1;
+		int filename_start_pos = initial_base_path.rfind_char('/') + 1;
 		int filename_end_pos = initial_base_path.length();
 
 		if (!is_built_in) {
@@ -240,6 +241,7 @@ void fog() {
 			alert->popup_centered();
 			return;
 		}
+		EditorNode::get_singleton()->ensure_uid_file(lpath);
 
 		emit_signal(SNAME("shader_include_created"), shader_inc);
 	} else {
@@ -258,6 +260,7 @@ void fog() {
 				alert->popup_centered();
 				return;
 			}
+			EditorNode::get_singleton()->ensure_uid_file(lpath);
 		}
 
 		emit_signal(SNAME("shader_created"), shader);
@@ -629,7 +632,7 @@ ShaderCreateDialog::ShaderCreateDialog() {
 
 	internal = memnew(CheckBox);
 	internal->set_text(TTR("On"));
-	internal->connect("toggled", callable_mp(this, &ShaderCreateDialog::_built_in_toggled));
+	internal->connect(SceneStringName(toggled), callable_mp(this, &ShaderCreateDialog::_built_in_toggled));
 	gc->add_child(memnew(Label(TTR("Built-in Shader:"))));
 	gc->add_child(internal);
 

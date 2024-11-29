@@ -3,6 +3,8 @@ import os
 
 from SCons.Util import WhereIs
 
+from platform_methods import get_build_version
+
 
 def run_closure_compiler(target, source, env, for_signature):
     closure_bin = os.path.join(
@@ -21,22 +23,6 @@ def run_closure_compiler(target, source, env, for_signature):
     return " ".join(cmd)
 
 
-def get_build_version():
-    import version
-
-    name = "custom_build"
-    if os.getenv("BUILD_NAME") is not None:
-        name = os.getenv("BUILD_NAME")
-    v = "%d.%d" % (version.major, version.minor)
-    if version.patch > 0:
-        v += ".%d" % version.patch
-    status = version.status
-    if os.getenv("GODOT_VERSION_STATUS") is not None:
-        status = str(os.getenv("GODOT_VERSION_STATUS"))
-    v += ".%s.%s" % (status, name)
-    return v
-
-
 def create_engine_file(env, target, source, externs, threads_enabled):
     if env["use_closure_compiler"]:
         return env.BuildJS(target, source, JSEXTERNS=externs)
@@ -51,11 +37,13 @@ def create_template_zip(env, js, wasm, worker, side):
         js,
         wasm,
         "#platform/web/js/libs/audio.worklet.js",
+        "#platform/web/js/libs/audio.position.worklet.js",
     ]
     out_files = [
         zip_dir.File(binary_name + ".js"),
         zip_dir.File(binary_name + ".wasm"),
         zip_dir.File(binary_name + ".audio.worklet.js"),
+        zip_dir.File(binary_name + ".audio.position.worklet.js"),
     ]
     if env["threads"]:
         in_files.append(worker)
@@ -74,6 +62,7 @@ def create_template_zip(env, js, wasm, worker, side):
             "offline.html",
             "godot.editor.js",
             "godot.editor.audio.worklet.js",
+            "godot.editor.audio.position.worklet.js",
             "logo.svg",
             "favicon.png",
         ]
@@ -81,7 +70,7 @@ def create_template_zip(env, js, wasm, worker, side):
             cache.append("godot.editor.worker.js")
         opt_cache = ["godot.editor.wasm"]
         subst_dict = {
-            "___GODOT_VERSION___": get_build_version(),
+            "___GODOT_VERSION___": get_build_version(False),
             "___GODOT_NAME___": "GodotEngine",
             "___GODOT_CACHE___": json.dumps(cache),
             "___GODOT_OPT_CACHE___": json.dumps(opt_cache),

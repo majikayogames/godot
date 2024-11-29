@@ -93,24 +93,6 @@ void ReplicationEditor::_pick_node_select_recursive(TreeItem *p_item, const Stri
 	}
 }
 
-void ReplicationEditor::_pick_node_filter_input(const Ref<InputEvent> &p_ie) {
-	Ref<InputEventKey> k = p_ie;
-
-	if (k.is_valid()) {
-		switch (k->get_keycode()) {
-			case Key::UP:
-			case Key::DOWN:
-			case Key::PAGEUP:
-			case Key::PAGEDOWN: {
-				pick_node->get_scene_tree()->get_scene_tree()->gui_input(k);
-				pick_node->get_filter_line_edit()->accept_event();
-			} break;
-			default:
-				break;
-		}
-	}
-}
-
 void ReplicationEditor::_pick_node_selected(NodePath p_path) {
 	Node *root = current->get_node(current->get_root_path());
 	ERR_FAIL_NULL(root);
@@ -184,11 +166,9 @@ ReplicationEditor::ReplicationEditor() {
 
 	pick_node = memnew(SceneTreeDialog);
 	add_child(pick_node);
-	pick_node->register_text_enter(pick_node->get_filter_line_edit());
 	pick_node->set_title(TTR("Pick a node to synchronize:"));
 	pick_node->connect("selected", callable_mp(this, &ReplicationEditor::_pick_node_selected));
 	pick_node->get_filter_line_edit()->connect(SceneStringName(text_changed), callable_mp(this, &ReplicationEditor::_pick_node_filter_text_changed));
-	pick_node->get_filter_line_edit()->connect("gui_input", callable_mp(this, &ReplicationEditor::_pick_node_filter_input));
 
 	prop_selector = memnew(PropertySelector);
 	add_child(prop_selector);
@@ -373,8 +353,8 @@ void ReplicationEditor::_notification(int p_what) {
 		}
 		case NOTIFICATION_ENTER_TREE: {
 			add_theme_style_override(SceneStringName(panel), EditorNode::get_singleton()->get_editor_theme()->get_stylebox(SceneStringName(panel), SNAME("Panel")));
-			add_pick_button->set_icon(get_theme_icon(SNAME("Add"), EditorStringName(EditorIcons)));
-			pin->set_icon(get_theme_icon(SNAME("Pin"), EditorStringName(EditorIcons)));
+			add_pick_button->set_button_icon(get_theme_icon(SNAME("Add"), EditorStringName(EditorIcons)));
+			pin->set_button_icon(get_theme_icon(SNAME("Pin"), EditorStringName(EditorIcons)));
 		} break;
 	}
 }
@@ -395,7 +375,7 @@ void ReplicationEditor::_add_pressed() {
 		return;
 	}
 
-	int idx = np_text.find(":");
+	int idx = np_text.find_char(':');
 	if (idx == -1) {
 		np_text = ".:" + np_text;
 	} else if (idx == 0) {
@@ -574,7 +554,7 @@ void ReplicationEditor::_add_property(const NodePath &p_property, bool p_spawn, 
 	Node *root_node = current && !current->get_root_path().is_empty() ? current->get_node(current->get_root_path()) : nullptr;
 	Ref<Texture2D> icon = _get_class_icon(root_node);
 	if (root_node) {
-		String path = prop.substr(0, prop.find(":"));
+		String path = prop.substr(0, prop.find_char(':'));
 		String subpath = prop.substr(path.size());
 		Node *node = root_node->get_node_or_null(path);
 		if (!node) {
