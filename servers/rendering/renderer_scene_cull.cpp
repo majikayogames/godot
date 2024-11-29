@@ -34,9 +34,15 @@
 #include "core/object/worker_thread_pool.h"
 #include "core/os/os.h"
 #include "rendering_light_culler.h"
+#include "rendering_server_constants.h"
 #include "rendering_server_default.h"
 
 #include <new>
+
+#if defined(DEBUG_ENABLED) && defined(TOOLS_ENABLED)
+// This is used only to obtain node paths for user-friendly physics interpolation warnings.
+#include "scene/main/node.h"
+#endif
 
 /* HALTON SEQUENCE */
 
@@ -52,6 +58,20 @@ static float get_halton_value(int p_index, int p_base) {
 	return r * 2.0f - 1.0f;
 }
 #endif // _3D_DISABLED
+
+/* EVENT QUEUING */
+
+void RendererSceneCull::tick() {
+	if (_interpolation_data.interpolation_enabled) {
+		update_interpolation_tick(true);
+	}
+}
+
+void RendererSceneCull::pre_draw(bool p_will_draw) {
+	if (_interpolation_data.interpolation_enabled) {
+		update_interpolation_frame(p_will_draw);
+	}
+}
 
 /* CAMERA API */
 
@@ -102,6 +122,7 @@ void RendererSceneCull::camera_set_override_projection(RID p_camera, const Proje
 void RendererSceneCull::camera_set_transform(RID p_camera, const Transform3D &p_transform) {
 	Camera *camera = camera_owner.get_or_null(p_camera);
 	ERR_FAIL_NULL(camera);
+
 	camera->transform = p_transform.orthonormalized();
 }
 
@@ -933,8 +954,45 @@ void RendererSceneCull::instance_set_transform(RID p_instance, const Transform3D
 	Instance *instance = instance_owner.get_or_null(p_instance);
 	ERR_FAIL_NULL(instance);
 
-	if (instance->transform == p_transform) {
-		return; //must be checked to avoid worst evil
+#ifdef RENDERING_SERVER_DEBUG_PHYSICS_INTERPOLATION
+	print_line("instance_set_transform " + rtos(p_transform.origin.x) + " .. tick " + itos(Engine::get_singleton()->get_physics_frames()));
+#endif
+
+	if (!_interpolation_data.interpolation_enabled || !instance->interpolated || !instance->scenario) {
+		if (instance->transform == p_transform) {
+			return; // Must be checked to avoid worst evil.
+		}
+
+#ifdef DEBUG_ENABLED
+
+		for (int i = 0; i < 4; i++) {
+			const Vector3 &v = i < 3 ? p_transform.basis.rows[i] : p_transform.origin;
+			ERR_FAIL_COND(!v.is_finite());
+		}
+
+#endif
+		instance->transform = p_transform;
+		_instance_queue_update(instance, true);
+
+#if defined(DEBUG_ENABLED) && defined(TOOLS_ENABLED)
+		if (_interpolation_data.interpolation_enabled && !instance->interpolated && Engine::get_singleton()->is_in_physics_frame()) {
+			PHYSICS_INTERPOLATION_NODE_WARNING(instance->object_id, "Non-interpolated instance triggered from physics process");
+		}
+#endif
+
+		return;
+	}
+
+	float new_checksum = TransformInterpolator::checksum_transform_3d(p_transform);
+	bool checksums_match = (instance->transform_checksum_curr == new_checksum) && (instance->transform_checksum_prev == new_checksum);
+
+	// We can't entirely reject no changes because we need the interpolation
+	// system to keep on stewing.
+
+	// Optimized check. First checks the checksums. If they pass it does the slow check at the end.
+	// Alternatively we can do this non-optimized and ignore the checksum... if no change.
+	if (checksums_match && (instance->transform_curr == p_transform) && (instance->transform_prev == p_transform)) {
+		return;
 	}
 
 #ifdef DEBUG_ENABLED
@@ -945,8 +1003,69 @@ void RendererSceneCull::instance_set_transform(RID p_instance, const Transform3D
 	}
 
 #endif
-	instance->transform = p_transform;
+
+	instance->transform_curr = p_transform;
+
+#ifdef RENDERING_SERVER_DEBUG_PHYSICS_INTERPOLATION
+	print_line("\tprev " + rtos(instance->transform_prev.origin.x) + ", curr " + rtos(instance->transform_curr.origin.x));
+#endif
+
+	// Keep checksums up to date.
+	instance->transform_checksum_curr = new_checksum;
+
+	if (!instance->on_interpolate_transform_list) {
+		_interpolation_data.instance_transform_update_list_curr->push_back(p_instance);
+		instance->on_interpolate_transform_list = true;
+	} else {
+		DEV_ASSERT(_interpolation_data.instance_transform_update_list_curr->size());
+	}
+
+	// If the instance is invisible, then we are simply updating the data flow, there is no need to calculate the interpolated
+	// transform or anything else.
+	// Ideally we would not even call the VisualServer::set_transform() when invisible but that would entail having logic
+	// to keep track of the previous transform on the SceneTree side. The "early out" below is less efficient but a lot cleaner codewise.
+	if (!instance->visible) {
+		return;
+	}
+
+	// Decide on the interpolation method... slerp if possible.
+	instance->interpolation_method = TransformInterpolator::find_method(instance->transform_prev.basis, instance->transform_curr.basis);
+
+	if (!instance->on_interpolate_list) {
+		_interpolation_data.instance_interpolate_update_list.push_back(p_instance);
+		instance->on_interpolate_list = true;
+	} else {
+		DEV_ASSERT(_interpolation_data.instance_interpolate_update_list.size());
+	}
+
 	_instance_queue_update(instance, true);
+
+#if defined(DEBUG_ENABLED) && defined(TOOLS_ENABLED)
+	if (!Engine::get_singleton()->is_in_physics_frame()) {
+		PHYSICS_INTERPOLATION_NODE_WARNING(instance->object_id, "Interpolated instance triggered from outside physics process");
+	}
+#endif
+}
+
+void RendererSceneCull::instance_set_interpolated(RID p_instance, bool p_interpolated) {
+	Instance *instance = instance_owner.get_or_null(p_instance);
+	ERR_FAIL_NULL(instance);
+	instance->interpolated = p_interpolated;
+}
+
+void RendererSceneCull::instance_reset_physics_interpolation(RID p_instance) {
+	Instance *instance = instance_owner.get_or_null(p_instance);
+	ERR_FAIL_NULL(instance);
+
+	if (_interpolation_data.interpolation_enabled && instance->interpolated) {
+		instance->transform_prev = instance->transform_curr;
+		instance->transform_checksum_prev = instance->transform_checksum_curr;
+
+#ifdef RENDERING_SERVER_DEBUG_PHYSICS_INTERPOLATION
+		print_line("instance_reset_physics_interpolation .. tick " + itos(Engine::get_singleton()->get_physics_frames()));
+		print_line("\tprev " + rtos(instance->transform_prev.origin.x) + ", curr " + rtos(instance->transform_curr.origin.x));
+#endif
+	}
 }
 
 void RendererSceneCull::instance_attach_object_instance_id(RID p_instance, ObjectID p_id) {
@@ -999,6 +1118,23 @@ void RendererSceneCull::instance_set_visible(RID p_instance, bool p_visible) {
 
 	if (p_visible) {
 		if (instance->scenario != nullptr) {
+			// Special case for physics interpolation, we want to ensure the interpolated data is up to date
+			if (_interpolation_data.interpolation_enabled && instance->interpolated && !instance->on_interpolate_list) {
+				// Do all the extra work we normally do on instance_set_transform(), because this is optimized out for hidden instances.
+				// This prevents a glitch of stale interpolation transform data when unhiding before the next physics tick.
+				instance->interpolation_method = TransformInterpolator::find_method(instance->transform_prev.basis, instance->transform_curr.basis);
+				_interpolation_data.instance_interpolate_update_list.push_back(p_instance);
+				instance->on_interpolate_list = true;
+
+				// We must also place on the transform update list for a tick, so the system
+				// can auto-detect if the instance is no longer moving, and remove from the interpolate lists again.
+				// If this step is ignored, an unmoving instance could remain on the interpolate lists indefinitely
+				// (or rather until the object is deleted) and cause unnecessary updates and drawcalls.
+				if (!instance->on_interpolate_transform_list) {
+					_interpolation_data.instance_transform_update_list_curr->push_back(p_instance);
+					instance->on_interpolate_transform_list = true;
+				}
+			}
 			_instance_queue_update(instance, true, false);
 		}
 	} else if (instance->indexer_id.is_valid()) {
@@ -1563,6 +1699,14 @@ Variant RendererSceneCull::instance_geometry_get_shader_parameter_default_value(
 	return Variant();
 }
 
+void RendererSceneCull::mesh_generate_pipelines(RID p_mesh, bool p_background_compilation) {
+	scene_render->mesh_generate_pipelines(p_mesh, p_background_compilation);
+}
+
+uint32_t RendererSceneCull::get_pipeline_compilations(RS::PipelineSource p_source) {
+	return scene_render->get_pipeline_compilations(p_source);
+}
+
 void RendererSceneCull::instance_geometry_get_shader_parameter_list(RID p_instance, List<PropertyInfo> *p_parameters) const {
 	const Instance *instance = const_cast<RendererSceneCull *>(this)->instance_owner.get_or_null(p_instance);
 	ERR_FAIL_NULL(instance);
@@ -1583,11 +1727,22 @@ void RendererSceneCull::instance_geometry_get_shader_parameter_list(RID p_instan
 void RendererSceneCull::_update_instance(Instance *p_instance) {
 	p_instance->version++;
 
+	// When not using interpolation the transform is used straight.
+	const Transform3D *instance_xform = &p_instance->transform;
+
+	// Can possibly use the most up to date current transform here when using physics interpolation ...
+	// uncomment the next line for this..
+	//if (_interpolation_data.interpolation_enabled && p_instance->interpolated) {
+	//    instance_xform = &p_instance->transform_curr;
+	//}
+	// However it does seem that using the interpolated transform (transform) works for keeping AABBs
+	// up to date to avoid culling errors.
+
 	if (p_instance->base_type == RS::INSTANCE_LIGHT) {
 		InstanceLightData *light = static_cast<InstanceLightData *>(p_instance->base_data);
 
-		RSG::light_storage->light_instance_set_transform(light->instance, p_instance->transform);
-		RSG::light_storage->light_instance_set_aabb(light->instance, p_instance->transform.xform(p_instance->aabb));
+		RSG::light_storage->light_instance_set_transform(light->instance, *instance_xform);
+		RSG::light_storage->light_instance_set_aabb(light->instance, instance_xform->xform(p_instance->aabb));
 		light->make_shadow_dirty();
 
 		RS::LightBakeMode bake_mode = RSG::light_storage->light_get_bake_mode(p_instance->base);
@@ -1610,7 +1765,7 @@ void RendererSceneCull::_update_instance(Instance *p_instance) {
 	} else if (p_instance->base_type == RS::INSTANCE_REFLECTION_PROBE) {
 		InstanceReflectionProbeData *reflection_probe = static_cast<InstanceReflectionProbeData *>(p_instance->base_data);
 
-		RSG::light_storage->reflection_probe_instance_set_transform(reflection_probe->instance, p_instance->transform);
+		RSG::light_storage->reflection_probe_instance_set_transform(reflection_probe->instance, *instance_xform);
 
 		if (p_instance->scenario && p_instance->array_index >= 0) {
 			InstanceData &idata = p_instance->scenario->instance_data[p_instance->array_index];
@@ -1619,17 +1774,17 @@ void RendererSceneCull::_update_instance(Instance *p_instance) {
 	} else if (p_instance->base_type == RS::INSTANCE_DECAL) {
 		InstanceDecalData *decal = static_cast<InstanceDecalData *>(p_instance->base_data);
 
-		RSG::texture_storage->decal_instance_set_transform(decal->instance, p_instance->transform);
+		RSG::texture_storage->decal_instance_set_transform(decal->instance, *instance_xform);
 	} else if (p_instance->base_type == RS::INSTANCE_LIGHTMAP) {
 		InstanceLightmapData *lightmap = static_cast<InstanceLightmapData *>(p_instance->base_data);
 
-		RSG::light_storage->lightmap_instance_set_transform(lightmap->instance, p_instance->transform);
+		RSG::light_storage->lightmap_instance_set_transform(lightmap->instance, *instance_xform);
 	} else if (p_instance->base_type == RS::INSTANCE_VOXEL_GI) {
 		InstanceVoxelGIData *voxel_gi = static_cast<InstanceVoxelGIData *>(p_instance->base_data);
 
-		scene_render->voxel_gi_instance_set_transform_to_data(voxel_gi->probe_instance, p_instance->transform);
+		scene_render->voxel_gi_instance_set_transform_to_data(voxel_gi->probe_instance, *instance_xform);
 	} else if (p_instance->base_type == RS::INSTANCE_PARTICLES) {
-		RSG::particles_storage->particles_set_emission_transform(p_instance->base, p_instance->transform);
+		RSG::particles_storage->particles_set_emission_transform(p_instance->base, *instance_xform);
 	} else if (p_instance->base_type == RS::INSTANCE_PARTICLES_COLLISION) {
 		InstanceParticlesCollisionData *collision = static_cast<InstanceParticlesCollisionData *>(p_instance->base_data);
 
@@ -1637,14 +1792,16 @@ void RendererSceneCull::_update_instance(Instance *p_instance) {
 		if (RSG::particles_storage->particles_collision_is_heightfield(p_instance->base)) {
 			heightfield_particle_colliders_update_list.insert(p_instance);
 		}
-		RSG::particles_storage->particles_collision_instance_set_transform(collision->instance, p_instance->transform);
+		RSG::particles_storage->particles_collision_instance_set_transform(collision->instance, *instance_xform);
 	} else if (p_instance->base_type == RS::INSTANCE_FOG_VOLUME) {
 		InstanceFogVolumeData *volume = static_cast<InstanceFogVolumeData *>(p_instance->base_data);
-		scene_render->fog_volume_instance_set_transform(volume->instance, p_instance->transform);
+		scene_render->fog_volume_instance_set_transform(volume->instance, *instance_xform);
 	} else if (p_instance->base_type == RS::INSTANCE_OCCLUDER) {
 		if (p_instance->scenario) {
-			RendererSceneOcclusionCull::get_singleton()->scenario_set_instance(p_instance->scenario->self, p_instance->self, p_instance->base, p_instance->transform, p_instance->visible);
+			RendererSceneOcclusionCull::get_singleton()->scenario_set_instance(p_instance->scenario->self, p_instance->self, p_instance->base, *instance_xform, p_instance->visible);
 		}
+	} else if (p_instance->base_type == RS::INSTANCE_NONE) {
+		return;
 	}
 
 	if (!p_instance->aabb.has_surface()) {
@@ -1663,7 +1820,7 @@ void RendererSceneCull::_update_instance(Instance *p_instance) {
 	}
 
 	AABB new_aabb;
-	new_aabb = p_instance->transform.xform(p_instance->aabb);
+	new_aabb = instance_xform->xform(p_instance->aabb);
 	p_instance->transformed_aabb = new_aabb;
 
 	if ((1 << p_instance->base_type) & RS::INSTANCE_GEOMETRY_MASK) {
@@ -1690,11 +1847,11 @@ void RendererSceneCull::_update_instance(Instance *p_instance) {
 		}
 
 		ERR_FAIL_NULL(geom->geometry_instance);
-		geom->geometry_instance->set_transform(p_instance->transform, p_instance->aabb, p_instance->transformed_aabb);
+		geom->geometry_instance->set_transform(*instance_xform, p_instance->aabb, p_instance->transformed_aabb);
 	}
 
 	// note: we had to remove is equal approx check here, it meant that det == 0.000004 won't work, which is the case for some of our scenes.
-	if (p_instance->scenario == nullptr || !p_instance->visible || p_instance->transform.basis.determinant() == 0) {
+	if (p_instance->scenario == nullptr || !p_instance->visible || instance_xform->basis.determinant() == 0) {
 		p_instance->prev_transformed_aabb = p_instance->transformed_aabb;
 		return;
 	}
@@ -1850,6 +2007,9 @@ void RendererSceneCull::_update_instance(Instance *p_instance) {
 			pair.bvh2 = &p_instance->scenario->indexers[Scenario::INDEXER_VOLUMES];
 		}
 		pair.cull_mask = RSG::light_storage->light_get_cull_mask(p_instance->base);
+	} else if (p_instance->base_type == RS::INSTANCE_LIGHTMAP) {
+		pair.pair_mask = RS::INSTANCE_GEOMETRY_MASK;
+		pair.bvh = &p_instance->scenario->indexers[Scenario::INDEXER_GEOMETRY];
 	} else if (geometry_instance_pair_mask & (1 << RS::INSTANCE_REFLECTION_PROBE) && (p_instance->base_type == RS::INSTANCE_REFLECTION_PROBE)) {
 		pair.pair_mask = RS::INSTANCE_GEOMETRY_MASK;
 		pair.bvh = &p_instance->scenario->indexers[Scenario::INDEXER_GEOMETRY];
@@ -2148,6 +2308,7 @@ void RendererSceneCull::_light_instance_setup_directional_shadow(int p_shadow_in
 	cull.shadow_count = p_shadow_index + 1;
 	cull.shadows[p_shadow_index].cascade_count = splits;
 	cull.shadows[p_shadow_index].light_instance = light->instance;
+	cull.shadows[p_shadow_index].caster_mask = RSG::light_storage->light_get_shadow_caster_mask(p_instance->base);
 
 	for (int i = 0; i < splits; i++) {
 		RENDER_TIMESTAMP("Cull DirectionalLight3D, Split " + itos(i));
@@ -2378,7 +2539,7 @@ bool RendererSceneCull::_light_instance_update_shadow(Instance *p_instance, cons
 
 					for (int j = 0; j < (int)instance_shadow_cull_result.size(); j++) {
 						Instance *instance = instance_shadow_cull_result[j];
-						if (!instance->visible || !((1 << instance->base_type) & RS::INSTANCE_GEOMETRY_MASK) || !static_cast<InstanceGeometryData *>(instance->base_data)->can_cast_shadows || !(p_visible_layers & instance->layer_mask)) {
+						if (!instance->visible || !((1 << instance->base_type) & RS::INSTANCE_GEOMETRY_MASK) || !static_cast<InstanceGeometryData *>(instance->base_data)->can_cast_shadows || !(p_visible_layers & instance->layer_mask & RSG::light_storage->light_get_shadow_caster_mask(p_instance->base))) {
 							continue;
 						} else {
 							if (static_cast<InstanceGeometryData *>(instance->base_data)->material_is_animated) {
@@ -2460,7 +2621,7 @@ bool RendererSceneCull::_light_instance_update_shadow(Instance *p_instance, cons
 
 					for (int j = 0; j < (int)instance_shadow_cull_result.size(); j++) {
 						Instance *instance = instance_shadow_cull_result[j];
-						if (!instance->visible || !((1 << instance->base_type) & RS::INSTANCE_GEOMETRY_MASK) || !static_cast<InstanceGeometryData *>(instance->base_data)->can_cast_shadows || !(p_visible_layers & instance->layer_mask)) {
+						if (!instance->visible || !((1 << instance->base_type) & RS::INSTANCE_GEOMETRY_MASK) || !static_cast<InstanceGeometryData *>(instance->base_data)->can_cast_shadows || !(p_visible_layers & instance->layer_mask & RSG::light_storage->light_get_shadow_caster_mask(p_instance->base))) {
 							continue;
 						} else {
 							if (static_cast<InstanceGeometryData *>(instance->base_data)->material_is_animated) {
@@ -2527,7 +2688,7 @@ bool RendererSceneCull::_light_instance_update_shadow(Instance *p_instance, cons
 
 			for (int j = 0; j < (int)instance_shadow_cull_result.size(); j++) {
 				Instance *instance = instance_shadow_cull_result[j];
-				if (!instance->visible || !((1 << instance->base_type) & RS::INSTANCE_GEOMETRY_MASK) || !static_cast<InstanceGeometryData *>(instance->base_data)->can_cast_shadows || !(p_visible_layers & instance->layer_mask)) {
+				if (!instance->visible || !((1 << instance->base_type) & RS::INSTANCE_GEOMETRY_MASK) || !static_cast<InstanceGeometryData *>(instance->base_data)->can_cast_shadows || !(p_visible_layers & instance->layer_mask & RSG::light_storage->light_get_shadow_caster_mask(p_instance->base))) {
 					continue;
 				} else {
 					if (static_cast<InstanceGeometryData *>(instance->base_data)->material_is_animated) {
@@ -2560,6 +2721,7 @@ void RendererSceneCull::render_camera(const Ref<RenderSceneBuffers> &p_render_bu
 	ERR_FAIL_NULL(camera);
 
 	Vector2 jitter;
+	float taa_frame_count = 0.0f;
 	if (p_jitter_phase_count > 0) {
 		uint32_t current_jitter_count = camera_jitter_array.size();
 		if (p_jitter_phase_count != current_jitter_count) {
@@ -2573,6 +2735,7 @@ void RendererSceneCull::render_camera(const Ref<RenderSceneBuffers> &p_render_bu
 		}
 
 		jitter = camera_jitter_array[RSG::rasterizer->get_frame_number() % p_jitter_phase_count] / p_viewport_size;
+		taa_frame_count = float(RSG::rasterizer->get_frame_number() % p_jitter_phase_count);
 	}
 
 	RendererSceneRender::CameraData camera_data;
@@ -2584,6 +2747,7 @@ void RendererSceneCull::render_camera(const Ref<RenderSceneBuffers> &p_render_bu
 		Projection projection;
 		bool vaspect = camera->vaspect;
 		bool is_orthogonal = false;
+		bool is_frustum = false;
 
 		switch (camera->type) {
 			case Camera::ORTHOGONAL: {
@@ -2612,10 +2776,11 @@ void RendererSceneCull::render_camera(const Ref<RenderSceneBuffers> &p_render_bu
 						camera->znear,
 						camera->zfar,
 						camera->vaspect);
+				is_frustum = true;
 			} break;
 		}
 
-		camera_data.set_camera(transform, projection, is_orthogonal, vaspect, jitter, camera->visible_layers);
+		camera_data.set_camera(transform, projection, is_orthogonal, is_frustum, vaspect, jitter, taa_frame_count, camera->visible_layers);
 		if (camera->has_override_projection) {
 			camera_data.set_override_projection(camera->override_projection);
 		}
@@ -2640,9 +2805,9 @@ void RendererSceneCull::render_camera(const Ref<RenderSceneBuffers> &p_render_bu
 		}
 
 		if (view_count == 1) {
-			camera_data.set_camera(transforms[0], projections[0], false, camera->vaspect, jitter, camera->visible_layers);
+			camera_data.set_camera(transforms[0], projections[0], false, false, camera->vaspect, jitter, p_jitter_phase_count, camera->visible_layers);
 		} else if (view_count == 2) {
-			camera_data.set_multiview_camera(view_count, transforms, projections, false, camera->vaspect);
+			camera_data.set_multiview_camera(view_count, transforms, projections, false, false, camera->vaspect);
 		} else {
 			// this won't be called (see fail check above) but keeping this comment to indicate we may support more then 2 views in the future...
 		}
@@ -2864,7 +3029,8 @@ void RendererSceneCull::_scene_cull(CullData &cull_data, InstanceCullResult &cul
 							cull_data.cull->lock.lock();
 							RSG::particles_storage->particles_request_process(idata.base_rid);
 							cull_data.cull->lock.unlock();
-							RSG::particles_storage->particles_set_view_axis(idata.base_rid, -cull_data.cam_transform.basis.get_column(2).normalized(), cull_data.cam_transform.basis.get_column(1).normalized());
+
+							RS::get_singleton()->call_on_render_thread(callable_mp_static(&RendererSceneCull::_scene_particles_set_view_axis).bind(idata.base_rid, -cull_data.cam_transform.basis.get_column(2).normalized(), cull_data.cam_transform.basis.get_column(1).normalized()));
 							//particles visible? request redraw
 							RenderingServerDefault::redraw_request();
 						}
@@ -2886,6 +3052,10 @@ void RendererSceneCull::_scene_cull(CullData &cull_data, InstanceCullResult &cul
 
 						for (const Instance *E : geom->lights) {
 							InstanceLightData *light = static_cast<InstanceLightData *>(E->base_data);
+							if (!(RSG::light_storage->light_get_cull_mask(E->base) & idata.layer_mask)) {
+								continue;
+							}
+
 							instance_pair_buffer[idx++] = light->instance;
 							if (idx == MAX_INSTANCE_PAIRS) {
 								break;
@@ -2990,7 +3160,7 @@ void RendererSceneCull::_scene_cull(CullData &cull_data, InstanceCullResult &cul
 					if (IN_FRUSTUM(cull_data.cull->shadows[j].cascades[k].frustum) && VIS_CHECK) {
 						uint32_t base_type = idata.flags & InstanceData::FLAG_BASE_TYPE_MASK;
 
-						if (((1 << base_type) & RS::INSTANCE_GEOMETRY_MASK) && idata.flags & InstanceData::FLAG_CAST_SHADOWS && LAYER_CHECK) {
+						if (((1 << base_type) & RS::INSTANCE_GEOMETRY_MASK) && idata.flags & InstanceData::FLAG_CAST_SHADOWS && (LAYER_CHECK & cull_data.cull->shadows[j].caster_mask)) {
 							cull_result.directional_shadows[j].cascade_geometry_instances[k].push_back(idata.instance_geometry);
 							mesh_visible = true;
 						}
@@ -3033,6 +3203,10 @@ void RendererSceneCull::_scene_cull(CullData &cull_data, InstanceCullResult &cul
 			cull_result.mesh_instances.push_back(cull_data.scenario->instance_data[i].instance->mesh_instance);
 		}
 	}
+}
+
+void RendererSceneCull::_scene_particles_set_view_axis(RID p_particles, const Vector3 &p_axis, const Vector3 &p_up_axis) {
+	RSG::particles_storage->particles_set_view_axis(p_particles, p_axis, p_up_axis);
 }
 
 void RendererSceneCull::_render_scene(const RendererSceneRender::CameraData *p_camera_data, const Ref<RenderSceneBuffers> &p_render_buffers, RID p_environment, RID p_force_camera_attributes, RID p_compositor, uint32_t p_visible_layers, RID p_scenario, RID p_viewport, RID p_shadow_atlas, RID p_reflection_probe, int p_reflection_probe_pass, float p_screen_mesh_lod_threshold, bool p_using_shadows, RenderingMethod::RenderInfo *r_render_info) {
@@ -3486,7 +3660,7 @@ void RendererSceneCull::render_empty_scene(const Ref<RenderSceneBuffers> &p_rend
 	RENDER_TIMESTAMP("Render Empty 3D Scene");
 
 	RendererSceneRender::CameraData camera_data;
-	camera_data.set_camera(Transform3D(), Projection(), true, false);
+	camera_data.set_camera(Transform3D(), Projection(), true, false, false);
 
 	scene_render->render_scene(p_render_buffers, &camera_data, &camera_data, PagedArray<RenderGeometryInstance *>(), PagedArray<RID>(), PagedArray<RID>(), PagedArray<RID>(), PagedArray<RID>(), PagedArray<RID>(), PagedArray<RID>(), environment, RID(), compositor, p_shadow_atlas, RID(), scenario->reflection_atlas, RID(), 0, 0, nullptr, 0, nullptr, 0, nullptr);
 #endif
@@ -3564,7 +3738,7 @@ bool RendererSceneCull::_render_reflection_probe_step(Instance *p_instance, int 
 
 		RENDER_TIMESTAMP("Render ReflectionProbe, Step " + itos(p_step));
 		RendererSceneRender::CameraData camera_data;
-		camera_data.set_camera(xform, cm, false, false);
+		camera_data.set_camera(xform, cm, false, false, false);
 
 		Ref<RenderSceneBuffers> render_buffers = RSG::light_storage->reflection_probe_atlas_get_render_buffers(scenario->reflection_atlas);
 		_render_scene(&camera_data, render_buffers, environment, RID(), RID(), RSG::light_storage->reflection_probe_get_cull_mask(p_instance->base), p_instance->scenario->self, RID(), shadow_atlas, reflection_probe->instance, p_step, mesh_lod_threshold, use_shadows);
@@ -4192,6 +4366,8 @@ bool RendererSceneCull::free(RID p_rid) {
 
 		Instance *instance = instance_owner.get_or_null(p_rid);
 
+		_interpolation_data.notify_free_instance(p_rid, *instance);
+
 		instance_geometry_set_lightmap(p_rid, RID(), Rect2(), 0);
 		instance_set_scenario(p_rid, RID());
 		instance_set_base(p_rid, RID());
@@ -4250,6 +4426,108 @@ RendererSceneCull *RendererSceneCull::singleton = nullptr;
 void RendererSceneCull::set_scene_render(RendererSceneRender *p_scene_render) {
 	scene_render = p_scene_render;
 	geometry_instance_pair_mask = scene_render->geometry_instance_get_pair_mask();
+}
+
+/* INTERPOLATION API */
+
+void RendererSceneCull::update_interpolation_tick(bool p_process) {
+	// MultiMesh: Update interpolation in storage.
+	RSG::mesh_storage->update_interpolation_tick(p_process);
+
+	// INSTANCES
+
+	// Detect any that were on the previous transform list that are no longer active;
+	// we should remove them from the interpolate list.
+
+	for (const RID &rid : *_interpolation_data.instance_transform_update_list_prev) {
+		Instance *instance = instance_owner.get_or_null(rid);
+
+		bool active = true;
+
+		// No longer active? (Either the instance deleted or no longer being transformed.)
+		if (instance && !instance->on_interpolate_transform_list) {
+			active = false;
+			instance->on_interpolate_list = false;
+
+			// Make sure the most recent transform is set...
+			instance->transform = instance->transform_curr;
+
+			// ... and that both prev and current are the same, just in case of any interpolations.
+			instance->transform_prev = instance->transform_curr;
+
+			// Make sure instances are updated one more time to ensure the AABBs are correct.
+			_instance_queue_update(instance, true);
+		}
+
+		if (!instance) {
+			active = false;
+		}
+
+		if (!active) {
+			_interpolation_data.instance_interpolate_update_list.erase(rid);
+		}
+	}
+
+	// Now for any in the transform list (being actively interpolated), keep the previous transform
+	// value up to date, ready for the next tick.
+	if (p_process) {
+		for (const RID &rid : *_interpolation_data.instance_transform_update_list_curr) {
+			Instance *instance = instance_owner.get_or_null(rid);
+			if (instance) {
+				instance->transform_prev = instance->transform_curr;
+				instance->transform_checksum_prev = instance->transform_checksum_curr;
+				instance->on_interpolate_transform_list = false;
+			}
+		}
+	}
+
+	// We maintain a mirror list for the transform updates, so we can detect when an instance
+	// is no longer being transformed, and remove it from the interpolate list.
+	SWAP(_interpolation_data.instance_transform_update_list_curr, _interpolation_data.instance_transform_update_list_prev);
+
+	// Prepare for the next iteration.
+	_interpolation_data.instance_transform_update_list_curr->clear();
+}
+
+void RendererSceneCull::update_interpolation_frame(bool p_process) {
+	// MultiMesh: Update interpolation in storage.
+	RSG::mesh_storage->update_interpolation_frame(p_process);
+
+	if (p_process) {
+		real_t f = Engine::get_singleton()->get_physics_interpolation_fraction();
+
+		for (const RID &rid : _interpolation_data.instance_interpolate_update_list) {
+			Instance *instance = instance_owner.get_or_null(rid);
+			if (instance) {
+				TransformInterpolator::interpolate_transform_3d_via_method(instance->transform_prev, instance->transform_curr, instance->transform, f, instance->interpolation_method);
+
+#ifdef RENDERING_SERVER_DEBUG_PHYSICS_INTERPOLATION
+				print_line("\t\tinterpolated: " + rtos(instance->transform.origin.x) + "\t( prev " + rtos(instance->transform_prev.origin.x) + ", curr " + rtos(instance->transform_curr.origin.x) + " ) on tick " + itos(Engine::get_singleton()->get_physics_frames()));
+#endif
+
+				// Make sure AABBs are constantly up to date through the interpolation.
+				_instance_queue_update(instance, true);
+			}
+		}
+	}
+}
+
+void RendererSceneCull::set_physics_interpolation_enabled(bool p_enabled) {
+	_interpolation_data.interpolation_enabled = p_enabled;
+}
+
+void RendererSceneCull::InterpolationData::notify_free_instance(RID p_rid, Instance &r_instance) {
+	r_instance.on_interpolate_list = false;
+	r_instance.on_interpolate_transform_list = false;
+
+	if (!interpolation_enabled) {
+		return;
+	}
+
+	// If the instance was on any of the lists, remove.
+	instance_interpolate_update_list.erase_multiple_unordered(p_rid);
+	instance_transform_update_list_curr->erase_multiple_unordered(p_rid);
+	instance_transform_update_list_prev->erase_multiple_unordered(p_rid);
 }
 
 RendererSceneCull::RendererSceneCull() {

@@ -31,6 +31,7 @@
 #ifndef TEXT_SERVER_H
 #define TEXT_SERVER_H
 
+#include "core/io/image.h"
 #include "core/object/ref_counted.h"
 #include "core/os/os.h"
 #include "core/templates/rid.h"
@@ -396,6 +397,7 @@ public:
 
 	virtual bool font_has_char(const RID &p_font_rid, int64_t p_char) const = 0;
 	virtual String font_get_supported_chars(const RID &p_font_rid) const = 0;
+	virtual PackedInt32Array font_get_supported_glyphs(const RID &p_font_rid) const = 0;
 
 	virtual void font_render_range(const RID &p_font, const Vector2i &p_size, int64_t p_start, int64_t p_end) = 0;
 	virtual void font_render_glyph(const RID &p_font_rid, const Vector2i &p_size, int64_t p_index) = 0;
@@ -542,8 +544,8 @@ public:
 	virtual PackedInt32Array string_get_word_breaks(const String &p_string, const String &p_language = "", int64_t p_chars_per_line = 0) const = 0;
 	virtual PackedInt32Array string_get_character_breaks(const String &p_string, const String &p_language = "") const;
 
-	virtual int64_t is_confusable(const String &p_string, const PackedStringArray &p_dict) const { return -1; };
-	virtual bool spoof_check(const String &p_string) const { return false; };
+	virtual int64_t is_confusable(const String &p_string, const PackedStringArray &p_dict) const { return -1; }
+	virtual bool spoof_check(const String &p_string) const { return false; }
 
 	virtual String strip_diacritics(const String &p_string) const;
 	virtual bool is_valid_identifier(const String &p_string) const;

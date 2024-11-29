@@ -29,17 +29,21 @@
 /**************************************************************************/
 
 #include "editor_interface.h"
+#include "editor_interface.compat.inc"
 
 #include "editor/editor_command_palette.h"
 #include "editor/editor_feature_profile.h"
+#include "editor/editor_main_screen.h"
 #include "editor/editor_node.h"
 #include "editor/editor_paths.h"
 #include "editor/editor_resource_preview.h"
 #include "editor/editor_settings.h"
 #include "editor/editor_undo_redo_manager.h"
 #include "editor/filesystem_dock.h"
+#include "editor/gui/editor_quick_open_dialog.h"
 #include "editor/gui/editor_run_bar.h"
 #include "editor/gui/editor_scene_tabs.h"
+#include "editor/gui/editor_toaster.h"
 #include "editor/gui/scene_tree_editor.h"
 #include "editor/inspector_dock.h"
 #include "editor/plugins/node_3d_editor_plugin.h"
@@ -84,6 +88,14 @@ EditorSelection *EditorInterface::get_selection() const {
 
 Ref<EditorSettings> EditorInterface::get_editor_settings() const {
 	return EditorSettings::get_singleton();
+}
+
+EditorToaster *EditorInterface::get_editor_toaster() const {
+	return EditorToaster::get_singleton();
+}
+
+EditorUndoRedoManager *EditorInterface::get_editor_undo_redo() const {
+	return EditorUndoRedoManager::get_singleton();
 }
 
 TypedArray<Texture2D> EditorInterface::_make_mesh_previews(const TypedArray<Mesh> &p_meshes, int p_preview_size) {
@@ -210,7 +222,7 @@ Control *EditorInterface::get_base_control() const {
 }
 
 VBoxContainer *EditorInterface::get_editor_main_screen() const {
-	return EditorNode::get_singleton()->get_main_screen_control();
+	return EditorNode::get_singleton()->get_editor_main_screen()->get_control();
 }
 
 ScriptEditor *EditorInterface::get_script_editor() const {
@@ -227,7 +239,7 @@ SubViewport *EditorInterface::get_editor_viewport_3d(int p_idx) const {
 }
 
 void EditorInterface::set_main_screen_editor(const String &p_name) {
-	EditorNode::get_singleton()->select_editor_by_name(p_name);
+	EditorNode::get_singleton()->get_editor_main_screen()->select_by_name(p_name);
 }
 
 void EditorInterface::set_distraction_free_mode(bool p_enter) {
@@ -272,15 +284,11 @@ void EditorInterface::set_current_feature_profile(const String &p_profile_name) 
 
 // Editor dialogs.
 
-void EditorInterface::popup_node_selector(const Callable &p_callback, const TypedArray<StringName> &p_valid_types) {
-	// TODO: Should reuse dialog instance instead of creating a fresh one, but need to rework set_valid_types first.
-	if (node_selector) {
-		node_selector->disconnect(SNAME("selected"), callable_mp(this, &EditorInterface::_node_selected).bind(p_callback));
-		node_selector->disconnect(SNAME("canceled"), callable_mp(this, &EditorInterface::_node_selection_canceled).bind(p_callback));
-		get_base_control()->remove_child(node_selector);
-		node_selector->queue_free();
+void EditorInterface::popup_node_selector(const Callable &p_callback, const TypedArray<StringName> &p_valid_types, Node *p_current_value) {
+	if (!node_selector) {
+		node_selector = memnew(SceneTreeDialog);
+		get_base_control()->add_child(node_selector);
 	}
-	node_selector = memnew(SceneTreeDialog);
 
 	Vector<StringName> valid_types;
 	int length = p_valid_types.size();
@@ -289,27 +297,18 @@ void EditorInterface::popup_node_selector(const Callable &p_callback, const Type
 		valid_types.write[i] = p_valid_types[i];
 	}
 	node_selector->set_valid_types(valid_types);
+	node_selector->popup_scenetree_dialog(p_current_value);
 
-	get_base_control()->add_child(node_selector);
-
-	node_selector->popup_scenetree_dialog();
-
-	const Callable selected_callback = callable_mp(this, &EditorInterface::_node_selected).bind(p_callback);
-	node_selector->connect(SNAME("selected"), selected_callback, CONNECT_DEFERRED);
-
-	const Callable canceled_callback = callable_mp(this, &EditorInterface::_node_selection_canceled).bind(p_callback);
-	node_selector->connect(SNAME("canceled"), canceled_callback, CONNECT_DEFERRED);
+	const Callable callback = callable_mp(this, &EditorInterface::_node_selected);
+	node_selector->connect(SNAME("selected"), callback.bind(p_callback), CONNECT_DEFERRED);
+	node_selector->connect(SNAME("canceled"), callback.bind(NodePath(), p_callback), CONNECT_DEFERRED);
 }
 
-void EditorInterface::popup_property_selector(Object *p_object, const Callable &p_callback, const PackedInt32Array &p_type_filter) {
-	// TODO: Should reuse dialog instance instead of creating a fresh one, but need to rework set_type_filter first.
-	if (property_selector) {
-		property_selector->disconnect(SNAME("selected"), callable_mp(this, &EditorInterface::_property_selected).bind(p_callback));
-		property_selector->disconnect(SNAME("canceled"), callable_mp(this, &EditorInterface::_property_selection_canceled).bind(p_callback));
-		get_base_control()->remove_child(property_selector);
-		property_selector->queue_free();
+void EditorInterface::popup_property_selector(Object *p_object, const Callable &p_callback, const PackedInt32Array &p_type_filter, const String &p_current_value) {
+	if (!property_selector) {
+		property_selector = memnew(PropertySelector);
+		get_base_control()->add_child(property_selector);
 	}
-	property_selector = memnew(PropertySelector);
 
 	Vector<Variant::Type> type_filter;
 	int length = p_type_filter.size();
@@ -318,33 +317,85 @@ void EditorInterface::popup_property_selector(Object *p_object, const Callable &
 		type_filter.write[i] = (Variant::Type)p_type_filter[i];
 	}
 	property_selector->set_type_filter(type_filter);
+	property_selector->select_property_from_instance(p_object, p_current_value);
 
-	get_base_control()->add_child(property_selector);
+	const Callable callback = callable_mp(this, &EditorInterface::_property_selected);
+	property_selector->connect(SNAME("selected"), callback.bind(p_callback), CONNECT_DEFERRED);
+	property_selector->connect(SNAME("canceled"), callback.bind(String(), p_callback), CONNECT_DEFERRED);
+}
 
-	property_selector->select_property_from_instance(p_object);
+void EditorInterface::popup_method_selector(Object *p_object, const Callable &p_callback, const String &p_current_value) {
+	if (!method_selector) {
+		method_selector = memnew(PropertySelector);
+		get_base_control()->add_child(method_selector);
+	}
 
-	const Callable selected_callback = callable_mp(this, &EditorInterface::_property_selected).bind(p_callback);
-	property_selector->connect(SNAME("selected"), selected_callback, CONNECT_DEFERRED);
+	method_selector->select_method_from_instance(p_object, p_current_value);
 
-	const Callable canceled_callback = callable_mp(this, &EditorInterface::_property_selection_canceled).bind(p_callback);
-	property_selector->connect(SNAME("canceled"), canceled_callback, CONNECT_DEFERRED);
+	const Callable callback = callable_mp(this, &EditorInterface::_method_selected);
+	method_selector->connect(SNAME("selected"), callback.bind(p_callback), CONNECT_DEFERRED);
+	method_selector->connect(SNAME("canceled"), callback.bind(String(), p_callback), CONNECT_DEFERRED);
+}
+
+void EditorInterface::popup_quick_open(const Callable &p_callback, const TypedArray<StringName> &p_base_types) {
+	StringName required_type = SNAME("Resource");
+	Vector<StringName> base_types;
+	if (p_base_types.is_empty()) {
+		base_types.append(required_type);
+	} else {
+		for (int i = 0; i < p_base_types.size(); i++) {
+			StringName type = p_base_types[i];
+			ERR_FAIL_COND_MSG(!(ClassDB::is_parent_class(type, required_type) || EditorNode::get_editor_data().script_class_is_parent(type, required_type)), "Only types deriving from Resource are supported in the quick open dialog.");
+			base_types.append(type);
+		}
+	}
+
+	EditorQuickOpenDialog *quick_open = EditorNode::get_singleton()->get_quick_open_dialog();
+	quick_open->connect(SNAME("canceled"), callable_mp(this, &EditorInterface::_quick_open).bind(String(), p_callback));
+	quick_open->popup_dialog(base_types, callable_mp(this, &EditorInterface::_quick_open).bind(p_callback));
 }
 
 void EditorInterface::_node_selected(const NodePath &p_node_path, const Callable &p_callback) {
-	const NodePath path = get_edited_scene_root()->get_path().rel_path_to(p_node_path);
-	_call_dialog_callback(p_callback, path, "node selected");
-}
+	const Callable callback = callable_mp(this, &EditorInterface::_node_selected);
+	node_selector->disconnect(SNAME("selected"), callback);
+	node_selector->disconnect(SNAME("canceled"), callback);
 
-void EditorInterface::_node_selection_canceled(const Callable &p_callback) {
-	_call_dialog_callback(p_callback, NodePath(), "node selection canceled");
+	if (p_node_path.is_empty()) {
+		_call_dialog_callback(p_callback, NodePath(), "node selection canceled");
+	} else {
+		const NodePath path = get_edited_scene_root()->get_path().rel_path_to(p_node_path);
+		_call_dialog_callback(p_callback, path, "node selected");
+	}
 }
 
 void EditorInterface::_property_selected(const String &p_property_name, const Callable &p_callback) {
-	_call_dialog_callback(p_callback, NodePath(p_property_name).get_as_property_path(), "property selected");
+	const Callable callback = callable_mp(this, &EditorInterface::_property_selected);
+	property_selector->disconnect(SNAME("selected"), callback);
+	property_selector->disconnect(SNAME("canceled"), callback);
+
+	if (p_property_name.is_empty()) {
+		_call_dialog_callback(p_callback, NodePath(p_property_name).get_as_property_path(), "property selection canceled");
+	} else {
+		_call_dialog_callback(p_callback, NodePath(p_property_name).get_as_property_path(), "property selected");
+	}
 }
 
-void EditorInterface::_property_selection_canceled(const Callable &p_callback) {
-	_call_dialog_callback(p_callback, NodePath(), "property selection canceled");
+void EditorInterface::_method_selected(const String &p_method_name, const Callable &p_callback) {
+	const Callable callback = callable_mp(this, &EditorInterface::_method_selected);
+	method_selector->disconnect(SNAME("selected"), callback);
+	method_selector->disconnect(SNAME("canceled"), callback);
+
+	if (p_method_name.is_empty()) {
+		_call_dialog_callback(p_callback, p_method_name, "method selection canceled");
+	} else {
+		_call_dialog_callback(p_callback, p_method_name, "method selected");
+	}
+}
+
+void EditorInterface::_quick_open(const String &p_file_path, const Callable &p_callback) {
+	EditorQuickOpenDialog *quick_open = EditorNode::get_singleton()->get_quick_open_dialog();
+	quick_open->disconnect(SNAME("canceled"), callable_mp(this, &EditorInterface::_quick_open));
+	_call_dialog_callback(p_callback, p_file_path, "quick open");
 }
 
 void EditorInterface::_call_dialog_callback(const Callable &p_callback, const Variant &p_selected, const String &p_context) {
@@ -525,6 +576,8 @@ void EditorInterface::_bind_methods() {
 	ClassDB::bind_method(D_METHOD("get_resource_previewer"), &EditorInterface::get_resource_previewer);
 	ClassDB::bind_method(D_METHOD("get_selection"), &EditorInterface::get_selection);
 	ClassDB::bind_method(D_METHOD("get_editor_settings"), &EditorInterface::get_editor_settings);
+	ClassDB::bind_method(D_METHOD("get_editor_toaster"), &EditorInterface::get_editor_toaster);
+	ClassDB::bind_method(D_METHOD("get_editor_undo_redo"), &EditorInterface::get_editor_undo_redo);
 
 	ClassDB::bind_method(D_METHOD("make_mesh_previews", "meshes", "preview_size"), &EditorInterface::_make_mesh_previews);
 
@@ -559,8 +612,10 @@ void EditorInterface::_bind_methods() {
 
 	// Editor dialogs.
 
-	ClassDB::bind_method(D_METHOD("popup_node_selector", "callback", "valid_types"), &EditorInterface::popup_node_selector, DEFVAL(TypedArray<StringName>()));
-	ClassDB::bind_method(D_METHOD("popup_property_selector", "object", "callback", "type_filter"), &EditorInterface::popup_property_selector, DEFVAL(PackedInt32Array()));
+	ClassDB::bind_method(D_METHOD("popup_node_selector", "callback", "valid_types", "current_value"), &EditorInterface::popup_node_selector, DEFVAL(TypedArray<StringName>()), DEFVAL(Variant()));
+	ClassDB::bind_method(D_METHOD("popup_property_selector", "object", "callback", "type_filter", "current_value"), &EditorInterface::popup_property_selector, DEFVAL(PackedInt32Array()), DEFVAL(String()));
+	ClassDB::bind_method(D_METHOD("popup_method_selector", "object", "callback", "current_value"), &EditorInterface::popup_method_selector, DEFVAL(String()));
+	ClassDB::bind_method(D_METHOD("popup_quick_open", "callback", "base_types"), &EditorInterface::popup_quick_open, DEFVAL(TypedArray<StringName>()));
 
 	// Editor docks.
 

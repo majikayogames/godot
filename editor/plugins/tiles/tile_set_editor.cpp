@@ -366,10 +366,10 @@ void TileSetEditor::_set_source_sort(int p_sort) {
 void TileSetEditor::_notification(int p_what) {
 	switch (p_what) {
 		case NOTIFICATION_THEME_CHANGED: {
-			sources_delete_button->set_icon(get_editor_theme_icon(SNAME("Remove")));
-			sources_add_button->set_icon(get_editor_theme_icon(SNAME("Add")));
-			source_sort_button->set_icon(get_editor_theme_icon(SNAME("Sort")));
-			sources_advanced_menu_button->set_icon(get_editor_theme_icon(SNAME("GuiTabMenuHl")));
+			sources_delete_button->set_button_icon(get_editor_theme_icon(SNAME("Remove")));
+			sources_add_button->set_button_icon(get_editor_theme_icon(SNAME("Add")));
+			source_sort_button->set_button_icon(get_editor_theme_icon(SNAME("Sort")));
+			sources_advanced_menu_button->set_button_icon(get_editor_theme_icon(SNAME("GuiTabMenuHl")));
 			missing_texture_texture = get_editor_theme_icon(SNAME("TileSet"));
 			expanded_area->add_theme_style_override(SceneStringName(panel), get_theme_stylebox(SceneStringName(panel), "Tree"));
 			_update_sources_list();
@@ -818,7 +818,7 @@ TileSetEditor::TileSetEditor() {
 	tabs_bar = memnew(TabBar);
 	tabs_bar->set_tab_alignment(TabBar::ALIGNMENT_CENTER);
 	tabs_bar->set_clip_tabs(false);
-	tabs_bar->add_tab(TTR("Tiles"));
+	tabs_bar->add_tab(TTR("Tile Sources"));
 	tabs_bar->add_tab(TTR("Patterns"));
 	tabs_bar->connect("tab_changed", callable_mp(this, &TileSetEditor::_tab_changed));
 

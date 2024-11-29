@@ -17,7 +17,7 @@
     <Authors>Godot Engine contributors</Authors>
 
     <PackageId>GodotSharp</PackageId>
-    <Version>4.3.0</Version>
+    <Version>4.4.0</Version>
     <PackageVersion>$(PackageVersion_GodotSharp)</PackageVersion>
     <RepositoryUrl>https://github.com/godotengine/godot/tree/master/modules/mono/glue/GodotSharp/GodotSharp</RepositoryUrl>
     <PackageProjectUrl>$(RepositoryUrl)</PackageProjectUrl>
@@ -48,6 +48,7 @@
   <!-- Sources -->
   <ItemGroup>
     <Compile Include="Core\Aabb.cs" />
+    <Compile Include="Core\Attributes\ExportToolButtonAttribute.cs" />
     <Compile Include="Core\Bridge\GodotSerializationInfo.cs" />
     <Compile Include="Core\Bridge\MethodInfo.cs" />
     <Compile Include="Core\Callable.generics.cs" />
@@ -135,7 +136,7 @@
     <Compile Include="Properties\AssemblyInfo.cs" />
   </ItemGroup>
   <!-- Compat Sources -->
-  <ItemGroup>
+  <ItemGroup Condition=" '$(GodotNoDeprecated)' == '' ">
     <Compile Include="Compat.cs" />
   </ItemGroup>
   <!--
